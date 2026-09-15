@@ -50,6 +50,12 @@ Testnet: https://rpc.testnet.nimiqwatch.com
 
 The endpoint remains environment-configurable. Use a dedicated authenticated provider for production where possible; optional `NIMIQ_RPC_USERNAME` and `NIMIQ_RPC_PASSWORD` stay server-side and must never be placed in browser environment variables. The official local Mini App flow may use the Vite LAN URL over HTTP in Nimiq Pay.
 
+### Production release
+
+Keep the development Convex deployment and production Convex deployment separate. On the authenticated production target, set `NIMIQ_NETWORK=mainnet`, `NIMIQ_RPC_URL=https://rpc.nimiqwatch.com`, and leave `NIMIQ_ENABLE_DEV_DIAGNOSTICS` absent or `false`. Deploy Convex with the current CLI workflow (`npx convex deploy --prod`) only after confirming the target and credentials. Set the resulting production Convex URL as Vercel's `VITE_CONVEX_URL` build environment variable. The included [vercel.json](./vercel.json) rewrites direct SPA routes back to `index.html` so `/t/:slug`, `/o/:slug`, and payment routes survive refresh.
+
+The testnet pairing remains `NIMIQ_NETWORK=testnet` with `https://rpc.testnet.nimiqwatch.com`. Never copy testnet payment records into production, and never put Convex or RPC secrets in Vite/browser environment variables.
+
 ## Architecture
 
 The frontend is React + Vite. Convex provides the schema, mutations, reactive public queries, and server-side verification actions. The Nimiq provider adapter keeps wallet calls out of UI components. Internal money values remain integer Luna strings; conversion to the SDK's safe JavaScript number happens only at the transaction boundary.
@@ -79,6 +85,12 @@ See [docs/QA_CHECKLIST.md](./docs/QA_CHECKLIST.md) for the manual mobile checkli
 ## Competition scope
 
 The current P0 is intentionally NIM-only: create, split, share, pay, independently verify, and settle. USDT, Polygon and other chains, recurring billing, saved groups, notifications, social login, debt netting, AI, itemized allocation, chat, and analytics platforms are deferred. Lightweight aggregate counts can be read from existing Convex data for competition reporting; Tab does not collect unnecessary personal information.
+
+## Competition release
+
+Tab is a group payment collection Mini App built inside Nimiq Pay. It coordinates one shared obligation, one recipient, and multiple direct contributors. Nimiq Pay supplies account permission and native transaction approval; the payment reference identifies the assigned slot; Convex independently verifies the raw Nimiq transaction and macro-block finality; reactive queries show live progress and settlement. Funds move contributor → recipient directly, with no seed phrase, private key, or custodial balance handled by Tab. Tab is not a Splitwise clone: it resolves one immediate collection instead of becoming a long-lived expense ledger.
+
+The complete P0 flow was physically validated on Nimiq Pay TestAlbatross testnet. See [release QA](./docs/RELEASE_QA.md), [tester guide](./docs/TESTER_GUIDE.md), and the [submission draft](./docs/SUBMISSION.md). No mainnet physical payment is claimed until it is manually performed.
 
 ## License
 
