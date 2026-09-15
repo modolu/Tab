@@ -7,6 +7,7 @@ const app = defineApp({
     NIMIQ_NETWORK: v.optional(v.string()),
     NIMIQ_RPC_USERNAME: v.optional(v.string()),
     NIMIQ_RPC_PASSWORD: v.optional(v.string()),
+    NIMIQ_ENABLE_DEV_DIAGNOSTICS: v.optional(v.string()),
   },
 })
 

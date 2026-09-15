@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { canShowPaymentAction } from '../../src/features/settlement/paymentState'
 import {
   decodeRecipientDataHex,
+  classifyFetchFailure,
+  classifyHttpStatus,
+  collectNimiqPaymentDiagnostics,
   evaluateNimiqTransaction,
   evaluateMacroBlockFinality,
   evaluateRpcNetwork,
@@ -11,6 +14,9 @@ import {
   normalizeRpcLatestBlock,
   normalizeMacroBlockAfter,
   parseRpcSuccess,
+  parseRpcJson,
+  RpcServerError,
+  rpcCall,
   RpcResponseInvalidError,
   type VerifiedRpcTransaction,
 } from '../../convex/verification'
@@ -53,6 +59,49 @@ function captureError(action: () => unknown): unknown {
 }
 
 describe('raw Nimiq JSON-RPC compatibility', () => {
+  it('preserves HTTP, JSON, and transport classifications at the RPC boundary', async () => {
+    const previousUrl = process.env.NIMIQ_RPC_URL
+    process.env.NIMIQ_RPC_URL = 'https://rpc.example.test'
+    const context = { paymentId: 'payment-id', observations: [] }
+    const response = (status: number, body: string) => ({ ok: status >= 200 && status < 300, status, text: async () => body }) as Response
+    try {
+      for (const [status, code] of [[401, 'rpc_http_401'], [403, 'rpc_http_403'], [429, 'rpc_rate_limited']] as const) {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(status, '')))
+        await expect(rpcCall('getLatestBlock', [false], context)).rejects.toMatchObject({ code })
+      }
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(200, '{not-json')))
+      await expect(rpcCall('getLatestBlock', [false], context)).rejects.toMatchObject({ code: 'rpc_json_invalid' })
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(200, JSON.stringify({ jsonrpc: '2.0', error: { code: -32601, message: 'Method not found' }, id: 1 }))))
+      await expect(rpcCall('getLatestBlock', [false], context)).rejects.toMatchObject({ code: 'rpc_method_error', rpcErrorCode: -32601 })
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+      await expect(rpcCall('getLatestBlock', [false], context)).rejects.toMatchObject({ code: 'rpc_network_error' })
+      expect(context.observations.map(({ verificationCode }) => verificationCode)).toEqual([
+        'rpc_http_401', 'rpc_http_403', 'rpc_rate_limited', 'rpc_json_invalid', 'rpc_method_error', 'rpc_network_error',
+      ])
+      expect(context.observations.every(({ paymentId, method, durationMs }) => paymentId === 'payment-id' && method === 'getLatestBlock' && durationMs >= 0)).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+      if (previousUrl === undefined) delete process.env.NIMIQ_RPC_URL
+      else process.env.NIMIQ_RPC_URL = previousUrl
+    }
+  })
+
+  it('classifies HTTP and transport failures without collapsing their diagnostics', () => {
+    expect(classifyHttpStatus(401)).toMatchObject({ code: 'rpc_http_401', disposition: 'failed' })
+    expect(classifyHttpStatus(403)).toMatchObject({ code: 'rpc_http_403', disposition: 'failed' })
+    expect(classifyHttpStatus(429)).toMatchObject({ code: 'rpc_rate_limited', disposition: 'retryable' })
+    expect(classifyFetchFailure(new Error('connection reset'))).toMatchObject({ code: 'rpc_network_error', disposition: 'retryable' })
+    expect(classifyFetchFailure(Object.assign(new Error('aborted'), { name: 'AbortError' }))).toMatchObject({ code: 'rpc_timeout', disposition: 'retryable' })
+  })
+
+  it('preserves JSON-RPC method errors and malformed JSON classifications', () => {
+    const rpcError = captureError(() => parseRpcSuccess({ jsonrpc: '2.0', error: { code: -32601, message: 'Method not found' }, id: 1 }))
+    expect(rpcError).toBeInstanceOf(RpcServerError)
+    expect(rpcError).toMatchObject({ rpcCode: -32601, rpcMessage: 'Method not found' })
+    const jsonError = captureError(() => parseRpcJson('{not-json'))
+    expect(jsonError).toMatchObject({ code: 'rpc_json_invalid' })
+  })
+
   it('unwraps the result.data JSON-RPC envelope and rejects a bare result object', () => {
     expect(parseRpcSuccess<typeof physicalNimiqTransactionResponse.result.data>(physicalNimiqTransactionResponse)).toEqual(physicalNimiqTransactionResponse.result.data)
     expect(() => parseRpcSuccess({ jsonrpc: '2.0', result: { network: 'TestAlbatross' }, id: 1 })).toThrow(RpcResponseInvalidError)
@@ -93,6 +142,56 @@ describe('raw Nimiq JSON-RPC compatibility', () => {
     const malformedLatestError = captureError(() => normalizeRpcLatestBlock(parseRpcSuccess({ ...latestResponse, result: { data: { network: 'TestAlbatross' }, metadata: null } })))
     expect(malformedMacroError).toMatchObject({ code: 'rpc_response_invalid' })
     expect(malformedLatestError).toMatchObject({ code: 'rpc_response_invalid' })
+  })
+})
+
+describe('development Nimiq verifier diagnostics', () => {
+  it('uses the stored transaction hash and performs only read-only RPC checks', async () => {
+    const previousNetwork = process.env.NIMIQ_NETWORK
+    process.env.NIMIQ_NETWORK = 'testnet'
+    const calls: Array<{ method: string; params: unknown[] }> = []
+    let mutationCalls = 0
+    const fakeRpc = async <T>(method: string, params: unknown[]): Promise<T> => {
+      calls.push({ method, params })
+      if (method === 'getLatestBlock') return { number: 11528619, network: 'TestAlbatross' } as T
+      if (method === 'getTransactionByHash') return physicalNimiqTransactionResponse.result.data as T
+      if (method === 'getMacroBlockAfter') return 11512590 as T
+      mutationCalls += 1
+      throw new Error(`Unexpected RPC method: ${method}`)
+    }
+
+    try {
+      const diagnostic = await collectNimiqPaymentDiagnostics({
+        payment: { txHash: physicalNimiqTransactionHash, senderAddress: 'NQ38 E8U7 XHBR 22E4 2NTT MABV GPX2 YDYS H41A' },
+        tab: { slug: '330ec603fb514e51', recipientAddress: 'NQ76 BYR0 G05A A71R U337 EQ3X 4EVE 97J8 3Q11' },
+        slot: { _id: 'slot-id' as never, amountMinor: '100000', shortId: 's0' },
+      }, fakeRpc, { paymentId: 'payment-id', observations: [] })
+
+      expect(diagnostic).toMatchObject({
+        configuredNetwork: 'testnet',
+        observedNetwork: 'TestAlbatross',
+        transactionFound: true,
+        transactionBlock: 11512531,
+        macroBlockAfter: 11512590,
+        latestBlock: 11528619,
+        finalized: true,
+        executionResult: true,
+        recipientMatches: true,
+        amountMatches: true,
+        referenceMatches: true,
+        senderType: 2,
+      })
+      expect(calls).toEqual([
+        { method: 'getLatestBlock', params: [false] },
+        { method: 'getTransactionByHash', params: [physicalNimiqTransactionHash] },
+        { method: 'getMacroBlockAfter', params: [11512531] },
+        { method: 'getLatestBlock', params: [false] },
+      ])
+      expect(mutationCalls).toBe(0)
+    } finally {
+      if (previousNetwork === undefined) delete process.env.NIMIQ_NETWORK
+      else process.env.NIMIQ_NETWORK = previousNetwork
+    }
   })
 })
 

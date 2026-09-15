@@ -115,4 +115,24 @@ describe('Phase 2 slot claiming and payment recording', () => {
     await t.mutation(internal.verification.applyVerificationResult, { paymentId: submitted.paymentId, kind: 'confirmed', reason: 'Existing transaction verified.' })
     expect(await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId })).toMatchObject({ status: 'confirmed', slotStatus: 'paid', txHash: tx('1') })
   })
+
+  it('stores a safe verifier code and diagnostic without replacing the friendly payment reason', async () => {
+    const t = convexTest(schema, modules)
+    const created = await create(t)
+    const slotId = created.participantSlotIds[0]
+    await t.mutation(anyApi.participants.claimParticipantSlot, { slug: created.slug, slotId, walletAddress: WALLET })
+    const submitted = await t.mutation(anyApi.payments.recordSubmittedPayment, { slug: created.slug, slotId, senderAddress: WALLET, txHash: tx('2') })
+
+    await t.mutation(internal.verification.applyVerificationResult, {
+      paymentId: submitted.paymentId,
+      kind: 'failed',
+      code: 'rpc_http_403',
+      diagnostic: 'getLatestBlock returned HTTP 403',
+      reason: 'Nimiq verification failed. Retry verification.',
+    })
+
+    const attempt = await t.run(async (ctx) => ctx.db.query('paymentVerificationAttempts').withIndex('by_payment', (q) => q.eq('paymentId', submitted.paymentId)).unique())
+    expect(attempt).toMatchObject({ result: 'failed', code: 'rpc_http_403', reason: 'getLatestBlock returned HTTP 403' })
+    expect(await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId })).toMatchObject({ status: 'failed', verificationCode: 'rpc_http_403', verificationReason: 'Nimiq verification failed. Retry verification.' })
+  })
 })

@@ -30,6 +30,7 @@ import type { DataModel } from "./dataModel.js";
 type Env = {
   readonly CONVEX_CLOUD_URL: string;
   readonly CONVEX_SITE_URL: string;
+  readonly NIMIQ_ENABLE_DEV_DIAGNOSTICS: string | undefined;
   readonly NIMIQ_NETWORK: string | undefined;
   readonly NIMIQ_RPC_PASSWORD: string | undefined;
   readonly NIMIQ_RPC_URL: string | undefined;

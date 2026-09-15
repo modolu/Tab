@@ -1,6 +1,6 @@
 import { ValidationUtils } from '@nimiq/utils/validation-utils'
 import { internal } from './_generated/api'
-import { internalAction, internalMutation, query, type MutationCtx } from './_generated/server'
+import { action, internalAction, internalMutation, query, type MutationCtx } from './_generated/server'
 import { env } from './_generated/server'
 import type { Id } from './_generated/dataModel'
 import { getPaymentReference } from './reference'
@@ -51,10 +51,93 @@ export type VerifiedRpcTransaction = {
 export type RpcLatestBlock = { number: number; network: string }
 
 export type VerificationOutcome =
-  | { kind: 'confirmed'; reason?: string; code?: string }
-  | { kind: 'invalid'; reason: string; code?: string }
-  | { kind: 'confirming'; reason: string; code?: string }
-  | { kind: 'failed'; reason: string; code: string }
+  | { kind: 'confirmed'; reason?: string; code?: string; diagnostic?: string }
+  | { kind: 'invalid'; reason: string; code?: string; diagnostic?: string }
+  | { kind: 'confirming'; reason: string; code?: string; diagnostic?: string }
+  | { kind: 'failed'; reason: string; code: string; diagnostic?: string }
+
+type RpcDisposition = 'retryable' | 'failed'
+export type RpcErrorClassification = {
+  code: string
+  disposition: RpcDisposition
+  message: string
+}
+
+type RpcObservation = {
+  paymentId: string
+  method: string
+  httpStatus: number | null
+  rpcErrorCode: number | string | null
+  rpcErrorMessage: string | null
+  responseShape: string
+  verificationCode: string
+  durationMs: number
+}
+
+export type RpcDiagnosticStatus = {
+  method: string
+  httpStatus?: number
+  rpcErrorCode?: number | string
+  rpcErrorMessage?: string
+  responseShape: string
+  verificationCode: string
+  durationMs: number
+}
+
+export type RpcCallContext = {
+  paymentId: string
+  observations?: RpcObservation[]
+}
+
+type RpcCaller = <T>(method: string, params: unknown[], context: RpcCallContext) => Promise<T>
+
+type StoredPaymentDiagnosticContext = {
+  payment: { txHash: string; senderAddress: string }
+  tab: { slug: string; recipientAddress: string }
+  slot: { _id: Id<'participantSlots'>; amountMinor: string; shortId?: string }
+}
+
+export type NimiqPaymentDiagnostic = {
+  configuredNetwork: string
+  observedNetwork: string | null
+  transactionFound: boolean
+  transactionBlock: number | null
+  macroBlockAfter: number | null
+  latestBlock: number | null
+  finalized: boolean
+  executionResult: boolean | null
+  recipientMatches: boolean | null
+  amountMatches: boolean | null
+  referenceMatches: boolean | null
+  senderType: number | null
+  rpcStatuses: RpcDiagnosticStatus[]
+}
+
+const rpcDiagnosticStatus = v.object({
+  method: v.string(),
+  httpStatus: v.optional(v.number()),
+  rpcErrorCode: v.optional(v.union(v.number(), v.string())),
+  rpcErrorMessage: v.optional(v.string()),
+  responseShape: v.string(),
+  verificationCode: v.string(),
+  durationMs: v.number(),
+})
+
+const diagnosticResult = v.object({
+  configuredNetwork: v.string(),
+  observedNetwork: v.union(v.string(), v.null()),
+  transactionFound: v.boolean(),
+  transactionBlock: v.union(v.number(), v.null()),
+  macroBlockAfter: v.union(v.number(), v.null()),
+  latestBlock: v.union(v.number(), v.null()),
+  finalized: v.boolean(),
+  executionResult: v.union(v.boolean(), v.null()),
+  recipientMatches: v.union(v.boolean(), v.null()),
+  amountMatches: v.union(v.boolean(), v.null()),
+  referenceMatches: v.union(v.boolean(), v.null()),
+  senderType: v.union(v.number(), v.null()),
+  rpcStatuses: v.array(rpcDiagnosticStatus),
+})
 
 function normalizeAddress(value: unknown): string | null {
   if (typeof value !== 'string' || !ValidationUtils.isValidAddress(value)) return null
@@ -72,29 +155,67 @@ function isRecord(value: unknown): value is RpcRecord {
 }
 
 export class RpcResponseInvalidError extends Error {
-  readonly code = 'rpc_response_invalid' as const
+  readonly code: 'rpc_response_invalid' | 'rpc_json_invalid'
+  readonly diagnosticMessage: string
 
-  constructor(message: string) {
+  constructor(message: string, code: 'rpc_response_invalid' | 'rpc_json_invalid' = 'rpc_response_invalid') {
     super(message)
     this.name = 'RpcResponseInvalidError'
+    this.code = code
+    this.diagnosticMessage = message
   }
 }
 
-class RpcServerError extends Error {}
+export class RpcServerError extends Error {
+  readonly rpcCode: number | string | null
+  readonly rpcMessage: string
 
-type RpcTemporaryCode = 'rpc_unavailable' | 'rpc_rate_limited'
+  constructor(rpcCode: number | string | null, rpcMessage: string) {
+    super(rpcMessage)
+    this.name = 'RpcServerError'
+    this.rpcCode = rpcCode
+    this.rpcMessage = rpcMessage
+  }
+}
+
+type RpcTemporaryCode = 'rpc_unavailable' | 'rpc_rate_limited' | 'rpc_network_error' | 'rpc_timeout'
 
 class RpcTemporaryError extends Error {
   readonly code: RpcTemporaryCode
+  readonly diagnosticMessage: string
 
-  constructor(message: string, code: RpcTemporaryCode) {
+  constructor(message: string, code: RpcTemporaryCode, diagnosticMessage = message) {
     super(message)
     this.name = 'RpcTemporaryError'
     this.code = code
+    this.diagnosticMessage = diagnosticMessage
   }
 }
 
-class RpcNotFoundError extends Error {}
+class RpcPermanentError extends Error {
+  readonly code: string
+  readonly diagnosticMessage: string
+  readonly rpcErrorCode: number | string | null
+
+  constructor(message: string, code: string, diagnosticMessage = message, rpcErrorCode: number | string | null = null) {
+    super(message)
+    this.name = 'RpcPermanentError'
+    this.code = code
+    this.diagnosticMessage = diagnosticMessage
+    this.rpcErrorCode = rpcErrorCode
+  }
+}
+
+class RpcNotFoundError extends Error {
+  readonly code = 'rpc_transaction_not_found' as const
+  readonly diagnosticMessage: string
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'RpcNotFoundError'
+    this.diagnosticMessage = message
+  }
+}
 
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== 'string') throw new RpcResponseInvalidError(`Nimiq RPC field ${field} is missing or invalid.`)
@@ -120,18 +241,118 @@ function requiredBoolean(value: unknown, field: string): boolean {
   return value
 }
 
+function sanitizeDiagnosticMessage(message: string): string {
+  return message.replace(/\s+/g, ' ').trim().slice(0, 240)
+}
+
+function valueShape(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (isRecord(value)) {
+    const keys = Object.keys(value).filter((key) => !key.toLowerCase().includes('data')).slice(0, 12)
+    return keys.length > 0 ? `object{${keys.join(',')}}` : 'object'
+  }
+  return typeof value
+}
+
+function responseShapeSummary(body: unknown): string {
+  if (!isRecord(body)) return valueShape(body)
+  if ('error' in body) return `jsonrpc.error:${valueShape(body.error)}`
+  if (!isRecord(body.result)) return `jsonrpc.result:${valueShape(body.result)}`
+  if (!('data' in body.result)) return 'jsonrpc.result.object_without_data'
+  return `jsonrpc.result.data:${valueShape(body.result.data)}`
+}
+
+export function classifyHttpStatus(status: number): RpcErrorClassification {
+  if (status === 401) return { code: 'rpc_http_401', disposition: 'failed', message: `RPC returned HTTP 401.` }
+  if (status === 403) return { code: 'rpc_http_403', disposition: 'failed', message: `RPC returned HTTP 403.` }
+  if (status === 408) return { code: 'rpc_timeout', disposition: 'retryable', message: 'RPC request timed out (HTTP 408).' }
+  if (status === 429) return { code: 'rpc_rate_limited', disposition: 'retryable', message: 'RPC rate limit reached (HTTP 429).' }
+  if (status >= 500) return { code: 'rpc_unavailable', disposition: 'retryable', message: `RPC returned HTTP ${status}.` }
+  return { code: `rpc_http_${status}`, disposition: 'failed', message: `RPC returned HTTP ${status}.` }
+}
+
+export function classifyFetchFailure(error: unknown): RpcErrorClassification {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return { code: 'rpc_timeout', disposition: 'retryable', message: 'RPC request timed out.' }
+  }
+  return { code: 'rpc_network_error', disposition: 'retryable', message: 'RPC endpoint could not be reached.' }
+}
+
+function isTransactionLookupMethod(method: string): boolean {
+  return method === 'getTransactionByHash' || method === 'getTransactionFromMempool'
+}
+
+function isNotFoundMessage(message: string): boolean {
+  return /not found|unknown transaction|no such transaction/i.test(message)
+}
+
+function rpcErrorDetails(error: unknown): { code: string; rpcErrorCode: number | string | null; rpcErrorMessage: string | null; message: string } {
+  if (error instanceof RpcServerError) {
+    return { code: 'rpc_method_error', rpcErrorCode: error.rpcCode, rpcErrorMessage: sanitizeDiagnosticMessage(error.rpcMessage), message: sanitizeDiagnosticMessage(error.message) }
+  }
+  if (error instanceof RpcResponseInvalidError) {
+    return { code: error.code, rpcErrorCode: null, rpcErrorMessage: null, message: error.diagnosticMessage }
+  }
+  if (error instanceof RpcTemporaryError || error instanceof RpcPermanentError || error instanceof RpcNotFoundError) {
+    return {
+      code: error.code,
+      rpcErrorCode: error instanceof RpcPermanentError ? error.rpcErrorCode : null,
+      rpcErrorMessage: null,
+      message: error.diagnosticMessage,
+    }
+  }
+  const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : 'Unexpected RPC error.'
+  return { code: 'rpc_response_invalid', rpcErrorCode: null, rpcErrorMessage: null, message }
+}
+
+function diagnosticObservation(observation: RpcObservation): RpcDiagnosticStatus {
+  return {
+    method: observation.method,
+    ...(observation.httpStatus === null ? {} : { httpStatus: observation.httpStatus }),
+    ...(observation.rpcErrorCode === null ? {} : { rpcErrorCode: observation.rpcErrorCode }),
+    ...(observation.rpcErrorMessage === null ? {} : { rpcErrorMessage: observation.rpcErrorMessage }),
+    responseShape: observation.responseShape,
+    verificationCode: observation.verificationCode,
+    durationMs: observation.durationMs,
+  }
+}
+
+function logRpcObservation(observation: RpcObservation): void {
+  console.info('[NIM verification RPC]', {
+    paymentId: observation.paymentId,
+    method: observation.method,
+    httpStatus: observation.httpStatus,
+    rpcErrorCode: observation.rpcErrorCode,
+    rpcErrorMessage: observation.rpcErrorMessage,
+    responseShape: observation.responseShape,
+    verificationCode: observation.verificationCode,
+    durationMs: observation.durationMs,
+  })
+}
+
 export function parseRpcSuccess<T>(body: unknown): T {
   if (!isRecord(body) || body.jsonrpc !== '2.0' || (typeof body.id !== 'number' && typeof body.id !== 'string')) {
     throw new RpcResponseInvalidError('Nimiq RPC returned an invalid JSON-RPC envelope.')
   }
   if (body.error !== undefined) {
-    const error = isRecord(body.error) ? body.error.message : undefined
-    throw new RpcServerError(typeof error === 'string' ? error : 'Nimiq RPC returned an error.')
+    const error = isRecord(body.error) ? body.error : null
+    const message = error && typeof error.message === 'string' ? error.message : 'Nimiq RPC returned an error.'
+    const code = error && (typeof error.code === 'number' || typeof error.code === 'string') ? error.code : null
+    throw new RpcServerError(code, message)
   }
   if (!isRecord(body.result) || !('data' in body.result) || !('metadata' in body.result)) {
     throw new RpcResponseInvalidError('Nimiq RPC success responses must contain result.data and result.metadata.')
   }
   return body.result.data as T
+}
+
+export function parseRpcJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new RpcResponseInvalidError('Nimiq RPC returned invalid JSON.', 'rpc_json_invalid')
+  }
 }
 
 export function decodeRecipientDataHex(value: unknown): string {
@@ -293,58 +514,105 @@ function rpcUrl(): string {
   return value
 }
 
-async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
+export async function rpcCall<T>(method: string, params: unknown[], context: RpcCallContext): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' }
   if (env.NIMIQ_RPC_USERNAME && env.NIMIQ_RPC_PASSWORD) {
     headers.Authorization = `Basic ${btoa(`${env.NIMIQ_RPC_USERNAME}:${env.NIMIQ_RPC_PASSWORD}`)}`
   }
-  let response: Response
+  const startedAt = Date.now()
+  let httpStatus: number | null = null
+  let rpcErrorCode: number | string | null = null
+  let rpcErrorMessage: string | null = null
+  let responseShape = 'not_received'
+  let caughtError: unknown = null
+  const endpoint = rpcUrl()
   try {
-    response = await fetch(rpcUrl(), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', method, params, id: Date.now() }),
-    })
-  } catch {
-    throw new RpcTemporaryError('The Nimiq RPC endpoint could not be reached.', 'rpc_unavailable')
-  }
-  if (!response.ok) {
-    if (response.status === 429) throw new RpcTemporaryError('Nimiq RPC rate limit reached.', 'rpc_rate_limited')
-    throw new RpcTemporaryError(`Nimiq RPC returned HTTP ${response.status}.`, 'rpc_unavailable')
-  }
-  let body: unknown
-  try {
-    body = await response.json()
-  } catch {
-    throw new RpcResponseInvalidError('Nimiq RPC returned invalid JSON.')
-  }
-  try {
-    return parseRpcSuccess<T>(body)
-  } catch (error) {
-    if (error instanceof RpcServerError) {
-      if (/not found|unknown transaction|no such transaction/i.test(error.message)) throw new RpcNotFoundError(error.message)
-      throw new RpcTemporaryError(error.message, 'rpc_unavailable')
+    let response: Response
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ jsonrpc: '2.0', method, params, id: Date.now() }),
+      })
+    } catch (error) {
+      const classification = classifyFetchFailure(error)
+      responseShape = 'network_error'
+      throw new RpcTemporaryError(classification.message, classification.code as RpcTemporaryCode, `${method}: ${classification.message}`)
     }
+
+    httpStatus = response.status
+    if (!response.ok) {
+      responseShape = 'http_error'
+      const classification = classifyHttpStatus(response.status)
+      if (classification.disposition === 'retryable') {
+        throw new RpcTemporaryError(classification.message, classification.code as RpcTemporaryCode, `${method}: ${classification.message}`)
+      }
+      throw new RpcPermanentError(classification.message, classification.code, `${method}: ${classification.message}`)
+    }
+
+    let body: unknown
+    try {
+      body = parseRpcJson(await response.text())
+    } catch (error) {
+      responseShape = 'invalid_json'
+      throw error
+    }
+    responseShape = responseShapeSummary(body)
+
+    try {
+      return parseRpcSuccess<T>(body)
+    } catch (error) {
+      if (error instanceof RpcServerError) {
+        rpcErrorCode = error.rpcCode
+        rpcErrorMessage = sanitizeDiagnosticMessage(error.rpcMessage)
+        if (isTransactionLookupMethod(method) && isNotFoundMessage(error.rpcMessage)) {
+          throw new RpcNotFoundError(`${method} JSON-RPC error${error.rpcCode === null ? '' : ` ${error.rpcCode}`}: ${rpcErrorMessage}`)
+        }
+        throw new RpcPermanentError(
+          `${method} JSON-RPC error${error.rpcCode === null ? '' : ` ${error.rpcCode}`}: ${rpcErrorMessage}`,
+          'rpc_method_error',
+          `${method} JSON-RPC error${error.rpcCode === null ? '' : ` ${error.rpcCode}`}: ${rpcErrorMessage}`,
+          error.rpcCode,
+        )
+      }
+      throw error
+    }
+  } catch (error) {
+    caughtError = error
     throw error
+  } finally {
+    const details = caughtError === null ? { code: 'rpc_ok', rpcErrorCode, rpcErrorMessage, message: '' } : rpcErrorDetails(caughtError)
+    const observation: RpcObservation = {
+      paymentId: context.paymentId,
+      method,
+      httpStatus,
+      rpcErrorCode: rpcErrorCode ?? details.rpcErrorCode,
+      rpcErrorMessage: rpcErrorMessage ?? details.rpcErrorMessage,
+      responseShape,
+      verificationCode: details.code,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    }
+    context.observations?.push(observation)
+    logRpcObservation(observation)
   }
 }
 
-async function getMacroBlockAfter(blockNumber: number): Promise<number> {
-  return normalizeMacroBlockAfter(await rpcCall<unknown>('getMacroBlockAfter', [blockNumber]))
+async function getMacroBlockAfter(blockNumber: number, context: RpcCallContext, call: RpcCaller = rpcCall): Promise<number> {
+  return normalizeMacroBlockAfter(await call<unknown>('getMacroBlockAfter', [blockNumber], context))
 }
 
-async function getLatestBlock(): Promise<RpcLatestBlock> {
-  return normalizeRpcLatestBlock(await rpcCall<unknown>('getLatestBlock', [false]))
+async function getLatestBlock(context: RpcCallContext, call: RpcCaller = rpcCall): Promise<RpcLatestBlock> {
+  return normalizeRpcLatestBlock(await call<unknown>('getLatestBlock', [false], context))
 }
 
-async function findTransaction(hash: string): Promise<{ transaction: VerifiedRpcTransaction | null; inMempool: boolean }> {
+async function findTransaction(hash: string, context: RpcCallContext): Promise<{ transaction: VerifiedRpcTransaction | null; inMempool: boolean }> {
   try {
-    const raw = await rpcCall<RawRpcTransaction | null>('getTransactionByHash', [hash])
+    const raw = await rpcCall<RawRpcTransaction | null>('getTransactionByHash', [hash], context)
     return { transaction: raw ? normalizeRpcTransaction(raw) : null, inMempool: false }
   } catch (error) {
     if (!(error instanceof RpcNotFoundError)) throw error
     try {
-      const raw = await rpcCall<RawRpcTransaction | null>('getTransactionFromMempool', [hash])
+      const raw = await rpcCall<RawRpcTransaction | null>('getTransactionFromMempool', [hash], context)
       return { transaction: raw ? normalizeRpcTransaction(raw, { allowPending: true }) : null, inMempool: true }
     } catch (mempoolError) {
       if (mempoolError instanceof RpcNotFoundError) return { transaction: null, inMempool: false }
@@ -352,6 +620,76 @@ async function findTransaction(hash: string): Promise<{ transaction: VerifiedRpc
     }
   }
 }
+
+export async function collectNimiqPaymentDiagnostics(
+  context: StoredPaymentDiagnosticContext,
+  call: RpcCaller,
+  rpcContext: RpcCallContext,
+): Promise<NimiqPaymentDiagnostic> {
+  const configured = env.NIMIQ_NETWORK?.trim().toLowerCase() ?? 'unconfigured'
+  const expectedNetwork = configured === 'testnet' || configured === 'mainnet' ? configured : null
+  const expectedReference = expectedNetwork
+    ? getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId)
+    : null
+  const read = async <T>(operation: () => Promise<T>): Promise<{ value: T | null; error: unknown | null }> => {
+    try {
+      return { value: await operation(), error: null }
+    } catch (error) {
+      return { value: null, error }
+    }
+  }
+
+  const network = await read(() => getLatestBlock(rpcContext, call))
+  const transactionResult = await read(() => call<RawRpcTransaction | null>('getTransactionByHash', [context.payment.txHash], rpcContext))
+  let transaction: VerifiedRpcTransaction | null = null
+  if (transactionResult.value) {
+    try {
+      transaction = normalizeRpcTransaction(transactionResult.value)
+    } catch {
+      // The RPC observation retains the response shape; diagnostics never return a raw payload.
+    }
+  }
+
+  const macro = transaction?.blockNumber === null || transaction?.blockNumber === undefined
+    ? { value: null, error: null }
+    : await read(() => getMacroBlockAfter(transaction.blockNumber as number, rpcContext, call))
+  const finalNetwork = await read(() => getLatestBlock(rpcContext, call))
+  const observedNetwork = network.value?.network ?? finalNetwork.value?.network ?? null
+  const latestBlock = finalNetwork.value?.number ?? null
+  const macroBlockAfter = macro.value
+
+  return {
+    configuredNetwork: configured,
+    observedNetwork,
+    transactionFound: transactionResult.value !== null && transactionResult.value !== undefined,
+    transactionBlock: transaction?.blockNumber ?? null,
+    macroBlockAfter,
+    latestBlock,
+    finalized: macroBlockAfter !== null && latestBlock !== null && evaluateMacroBlockFinality({ latestBlockNumber: latestBlock, macroBlockAfterTransaction: macroBlockAfter }),
+    executionResult: transaction?.executionResult ?? null,
+    recipientMatches: transaction && normalizeAddress(context.tab.recipientAddress) !== null
+      ? normalizeAddress(transaction.recipientAddress) === normalizeAddress(context.tab.recipientAddress)
+      : null,
+    amountMatches: transaction ? transaction.valueMinor === context.slot.amountMinor : null,
+    referenceMatches: transaction && expectedReference ? transaction.recipientData === expectedReference : null,
+    senderType: transaction?.senderType ?? null,
+    rpcStatuses: rpcContext.observations?.map(diagnosticObservation) ?? [],
+  }
+}
+
+export const devDiagnoseNimiqPayment = action({
+  args: { paymentId: v.id('payments') },
+  returns: diagnosticResult,
+  handler: async (ctx, args): Promise<NimiqPaymentDiagnostic> => {
+    if (env.NIMIQ_ENABLE_DEV_DIAGNOSTICS?.trim().toLowerCase() !== 'true') {
+      throw new Error('Development Nimiq diagnostics are disabled.')
+    }
+    const stored = await ctx.runQuery(internal.payments.getVerificationContext, { paymentId: args.paymentId })
+    if (!stored) throw new Error('Payment not found.')
+    const rpcContext: RpcCallContext = { paymentId: String(args.paymentId), observations: [] }
+    return collectNimiqPaymentDiagnostics(stored, rpcCall, rpcContext)
+  },
+})
 
 export const verifyNimiqTransaction = internalAction({
   args: { paymentId: v.id('payments'), scheduledAt: v.optional(v.number()) },
@@ -362,19 +700,20 @@ export const verifyNimiqTransaction = internalAction({
     const context = await ctx.runQuery(internal.payments.getVerificationContext, { paymentId: args.paymentId })
     if (!context || context.payment.status === 'confirmed' || context.payment.status === 'invalid') return null
 
+    const rpcContext: RpcCallContext = { paymentId: String(args.paymentId), observations: [] }
     let outcome: VerificationOutcome
     try {
       const expectedNetwork = configuredNetwork()
-      const latestBlock = await getLatestBlock()
-      const networkOutcome = evaluateRpcNetwork({ actualNetwork: latestBlock.network, expectedNetwork })
+      const networkBlock = await getLatestBlock(rpcContext)
+      const networkOutcome = evaluateRpcNetwork({ actualNetwork: networkBlock.network, expectedNetwork })
       if (networkOutcome.kind === 'failed') {
         console.warn('Nimiq RPC network mismatch or unidentified network', {
           expected: expectedRpcNetwork(expectedNetwork),
-          actual: typeof latestBlock.network === 'string' ? latestBlock.network : 'unknown',
+          actual: typeof networkBlock.network === 'string' ? networkBlock.network : 'unknown',
         })
         outcome = networkOutcome
       } else {
-        const found = await findTransaction(context.payment.txHash)
+        const found = await findTransaction(context.payment.txHash, rpcContext)
         const lookupOutcome = evaluateTransactionLookup({ transactionFound: Boolean(found.transaction), inMempool: found.inMempool })
         if (lookupOutcome) {
           outcome = lookupOutcome
@@ -382,13 +721,14 @@ export const verifyNimiqTransaction = internalAction({
           const transaction = found.transaction
           if (!transaction) throw new RpcTemporaryError('Nimiq RPC returned no transaction.', 'rpc_unavailable')
           const [macroBlockAfterTransaction, rpcNetworkId] = await Promise.all([
-            transaction.blockNumber === null ? Promise.resolve(null) : getMacroBlockAfter(transaction.blockNumber),
-            rpcCall<unknown>('getNetworkId', []).then((value) => requiredInteger(value, 'networkId')),
+            transaction.blockNumber === null ? Promise.resolve(null) : getMacroBlockAfter(transaction.blockNumber, rpcContext),
+            rpcCall<unknown>('getNetworkId', [], rpcContext).then((value) => requiredInteger(value, 'networkId')),
           ])
+          const finalLatestBlock = await getLatestBlock(rpcContext)
           outcome = evaluateNimiqTransaction({
             transaction,
             macroBlockAfterTransaction,
-            latestBlock,
+            latestBlock: finalLatestBlock,
             rpcNetworkId,
             expectedNetwork,
             expectedSender: context.payment.senderAddress,
@@ -400,16 +740,38 @@ export const verifyNimiqTransaction = internalAction({
       }
     } catch (error) {
       if (error instanceof RpcResponseInvalidError) {
-        outcome = { kind: 'failed', code: 'rpc_response_invalid', reason: error.message }
+        outcome = {
+          kind: 'failed',
+          code: error.code,
+          reason: 'Nimiq verification returned an invalid response. Retry verification.',
+          diagnostic: error.diagnosticMessage,
+        }
       } else if (error instanceof RpcTemporaryError) {
-        outcome = { kind: 'confirming', code: error.code, reason: 'Nimiq verification is temporarily unavailable; retrying.' }
+        outcome = {
+          kind: 'confirming',
+          code: error.code,
+          reason: 'Nimiq verification is temporarily unavailable; retrying.',
+          diagnostic: error.diagnosticMessage,
+        }
       } else if (error instanceof RpcNotFoundError) {
-        outcome = { kind: 'confirming', code: 'rpc_transaction_not_found', reason: 'Transaction submitted; waiting for it to appear onchain.' }
+        outcome = {
+          kind: 'confirming',
+          code: error.code,
+          reason: 'Transaction submitted; waiting for it to appear onchain.',
+          diagnostic: error.diagnosticMessage,
+        }
+      } else if (error instanceof RpcPermanentError) {
+        outcome = {
+          kind: 'failed',
+          code: error.code,
+          reason: 'Nimiq verification failed. Retry verification.',
+          diagnostic: error.diagnosticMessage,
+        }
       } else {
-        const reason = error instanceof Error ? error.message : 'Verification configuration is invalid.'
-        outcome = /NIMIQ_RPC_URL|NIMIQ_NETWORK|endpoint is not configured/i.test(reason)
+        const diagnostic = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : 'Unexpected verification error.'
+        outcome = /NIMIQ_RPC_URL|NIMIQ_NETWORK|endpoint is not configured/i.test(diagnostic)
           ? { kind: 'failed', code: 'verification_not_configured', reason: 'Onchain verification is not configured for this deployment.' }
-          : { kind: 'invalid', code: 'verification_error', reason }
+          : { kind: 'failed', code: 'rpc_response_invalid', reason: 'Nimiq verification failed. Retry verification.', diagnostic }
       }
     }
 
@@ -418,11 +780,11 @@ export const verifyNimiqTransaction = internalAction({
       kind: outcome.kind,
       reason: 'reason' in outcome && outcome.reason ? outcome.reason : 'Nimiq transaction verified and finalized.',
     } as const
-    if (outcome.code) {
-      await ctx.runMutation(internal.verification.applyVerificationResult, { ...resultArgs, code: outcome.code })
-    } else {
-      await ctx.runMutation(internal.verification.applyVerificationResult, resultArgs)
-    }
+    await ctx.runMutation(internal.verification.applyVerificationResult, {
+      ...resultArgs,
+      ...(outcome.code ? { code: outcome.code } : {}),
+      ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
+    })
     return null
   },
 })
@@ -445,6 +807,7 @@ export const applyVerificationResult = internalMutation({
     paymentId: v.id('payments'),
     kind: v.union(v.literal('confirmed'), v.literal('invalid'), v.literal('confirming'), v.literal('failed')),
     code: v.optional(v.string()),
+    diagnostic: v.optional(v.string()),
     reason: v.string(),
   },
   returns: v.null(),
@@ -455,7 +818,13 @@ export const applyVerificationResult = internalMutation({
     const tab = await ctx.db.get(payment.tabId)
     if (!slot || !tab) return null
     const attempts = (payment.verificationAttempts ?? 0) + 1
-    await ctx.db.insert('paymentVerificationAttempts', { paymentId: payment._id, attemptedAt: Date.now(), result: args.kind, reason: args.reason })
+    await ctx.db.insert('paymentVerificationAttempts', {
+      paymentId: payment._id,
+      attemptedAt: Date.now(),
+      result: args.kind,
+      code: args.code,
+      reason: args.diagnostic ?? args.reason,
+    })
 
     if (args.kind === 'confirmed') {
       const now = Date.now()

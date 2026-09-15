@@ -50,6 +50,7 @@ export default defineSchema({
     paymentId: v.id('payments'),
     attemptedAt: v.number(),
     result: v.string(),
+    code: v.optional(v.string()),
     reason: v.optional(v.string()),
   }).index('by_payment', ['paymentId']),
 })
