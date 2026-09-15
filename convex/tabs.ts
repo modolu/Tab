@@ -1,5 +1,6 @@
 import { ValidationUtils } from '@nimiq/utils/validation-utils'
-import { mutation, query } from './_generated/server'
+import { mutation, query, type QueryCtx } from './_generated/server'
+import type { Doc } from './_generated/dataModel'
 import { v } from 'convex/values'
 
 const createParticipantValidator = v.object({
@@ -17,6 +18,34 @@ const createTabValidator = {
   participants: v.array(createParticipantValidator),
   ownerSecretHash: v.string(),
 }
+
+const createTabResultValidator = v.object({
+  tabId: v.id('tabs'),
+  slug: v.string(),
+  participantSlotIds: v.array(v.id('participantSlots')),
+})
+
+const publicParticipantValidator = v.object({
+  id: v.id('participantSlots'),
+  label: v.string(),
+  amountMinor: v.string(),
+  status: v.union(v.literal('unpaid'), v.literal('pending'), v.literal('paid')),
+})
+
+const publicTabValidator = v.union(v.object({
+  id: v.id('tabs'),
+  slug: v.string(),
+  title: v.string(),
+  note: v.optional(v.string()),
+  token: v.literal('NIM'),
+  amountMinor: v.string(),
+  recipientAddress: v.string(),
+  allocationMode: v.union(v.literal('equal'), v.literal('custom')),
+  status: v.union(v.literal('open'), v.literal('settled'), v.literal('expired'), v.literal('cancelled')),
+  participants: v.array(publicParticipantValidator),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+}), v.null())
 
 function parseLuna(value: string, field: string): bigint {
   if (!/^\d+$/.test(value)) throw new Error(`${field} must be a non-negative integer string.`)
@@ -62,19 +91,10 @@ function validateDraft(args: {
   return allocations.map(String)
 }
 
-function toPublicTab(tab: {
-  _id: string
-  slug: string
-  title: string
-  note?: string
-  token: 'NIM'
-  amountMinor: string
-  recipientAddress: string
-  allocationMode: 'equal' | 'custom'
-  status: 'open' | 'settled' | 'expired' | 'cancelled'
-  createdAt: number
-  updatedAt: number
-}, slots: Array<{ _id: string; label: string; amountMinor: string; status: 'unpaid' | 'pending' | 'paid' }>) {
+function toPublicTab(
+  tab: Pick<Doc<'tabs'>, '_id' | 'slug' | 'title' | 'note' | 'token' | 'amountMinor' | 'recipientAddress' | 'allocationMode' | 'status' | 'createdAt' | 'updatedAt'>,
+  slots: Array<Pick<Doc<'participantSlots'>, '_id' | 'label' | 'amountMinor' | 'status'>>,
+) {
   return {
     id: tab._id,
     slug: tab.slug,
@@ -91,15 +111,16 @@ function toPublicTab(tab: {
   }
 }
 
-async function getPublicTab(ctx: { db: any }, slug: string) {
-  const tab = await ctx.db.query('tabs').withIndex('by_slug', (q: any) => q.eq('slug', slug)).first()
+async function getPublicTab(ctx: QueryCtx, slug: string) {
+  const tab = await ctx.db.query('tabs').withIndex('by_slug', (q) => q.eq('slug', slug)).first()
   if (!tab) return null
-  const slots = await ctx.db.query('participantSlots').withIndex('by_tab', (q: any) => q.eq('tabId', tab._id)).collect()
+  const slots = await ctx.db.query('participantSlots').withIndex('by_tab', (q) => q.eq('tabId', tab._id)).take(100)
   return toPublicTab(tab, slots)
 }
 
 export const createTab = mutation({
   args: createTabValidator,
+  returns: createTabResultValidator,
   handler: async (ctx, args) => {
     const amounts = validateDraft(args)
     const now = Date.now()
@@ -144,16 +165,24 @@ export const createTab = mutation({
 
 export const getTabBySlug = query({
   args: { slug: v.string() },
+  returns: publicTabValidator,
   handler: (ctx, args) => getPublicTab(ctx, args.slug),
 })
 
+async function hashOwnerSecret(secret: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export const getOrganizerTab = query({
-  args: { slug: v.string(), ownerSecretHash: v.optional(v.string()) },
+  args: { slug: v.string(), ownerSecret: v.optional(v.string()) },
+  returns: publicTabValidator,
   handler: async (ctx, args) => {
     const tab = await ctx.db.query('tabs').withIndex('by_slug', (q) => q.eq('slug', args.slug)).first()
     if (!tab) return null
-    if (!args.ownerSecretHash || args.ownerSecretHash !== tab.ownerSecretHash) return null
-    const slots = await ctx.db.query('participantSlots').withIndex('by_tab', (q) => q.eq('tabId', tab._id)).collect()
+    if (!args.ownerSecret) return null
+    if (await hashOwnerSecret(args.ownerSecret) !== tab.ownerSecretHash) return null
+    const slots = await ctx.db.query('participantSlots').withIndex('by_tab', (q) => q.eq('tabId', tab._id)).take(100)
     return toPublicTab(tab, slots)
   },
 })

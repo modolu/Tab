@@ -80,7 +80,6 @@ export default function CreateTabPage() {
       const ownerSecretHash = await hashOwnerSecret(ownerSecret)
       const result = await backend.createTab({ ...draft, ownerSecretHash })
       sessionStorage.setItem(`tab-owner-secret:${result.slug}`, ownerSecret)
-      sessionStorage.setItem(`tab-owner-hash:${result.slug}`, ownerSecretHash)
       navigate(`/o/${encodeURIComponent(result.slug)}`)
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : 'Could not create this Tab. Please try again.')
@@ -95,7 +94,6 @@ export default function CreateTabPage() {
         <Link className="back-link" to="/" aria-label="Back to home">←</Link>
         <div><p className="eyebrow">NEW TAB</p><h2>Create a Tab</h2></div>
       </header>
-      {!backend.configured && <p className="config-note" role="status">Local preview mode — add VITE_CONVEX_URL to persist Tabs in Convex.</p>}
       <form onSubmit={handleSubmit} noValidate>
         <section className="form-section" aria-labelledby="details-heading">
           <div className="section-heading"><span className="step-number">1</span><div><h3 id="details-heading">What’s this for?</h3><p>Give your shared cost a clear name.</p></div></div>

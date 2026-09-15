@@ -2,70 +2,72 @@ import { ConvexProvider, ConvexReactClient } from 'convex/react'
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { anyApi } from 'convex/server'
 import type { CreateTabInput, CreateTabResult, PublicTab } from '../lib/types'
-import { createSlug } from '../lib/ids'
 
 export type TabBackend = {
   configured: boolean
   createTab: (input: CreateTabInput) => Promise<CreateTabResult>
   getTabBySlug: (slug: string) => Promise<PublicTab | null>
-  getOrganizerTab: (slug: string, ownerSecretHash?: string) => Promise<PublicTab | null>
+  getOrganizerTab: (slug: string, ownerSecret?: string) => Promise<PublicTab | null>
 }
 
 const BackendContext = createContext<TabBackend | null>(null)
 
-function createLocalBackend(): TabBackend {
-  const records = new Map<string, PublicTab>()
+export const missingConvexUrlMessage =
+  'Tab cannot start because VITE_CONVEX_URL is missing. Run `npx convex dev`, then restart the Vite server.'
 
+export function requireConvexUrl(value: string | undefined): string {
+  const url = value?.trim()
+  if (!url) throw new Error(missingConvexUrlMessage)
+
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error()
+  } catch {
+    throw new Error('VITE_CONVEX_URL must be a valid http(s) Convex deployment URL.')
+  }
+
+  return url
+}
+
+export function createConvexBackend(client: ConvexReactClient): TabBackend {
   return {
-    configured: false,
-    async createTab(input) {
-      const slug = `local-${createSlug()}`
-      const participants = input.participants.map((participant, index) => ({
-        id: `${slug}-${index}`,
-        label: participant.label.trim(),
-        amountMinor: participant.amountMinor ?? '0',
-        status: 'unpaid' as const,
-      }))
-      const tab: PublicTab = {
-        slug,
-        title: input.title.trim(),
-        note: input.note?.trim() || undefined,
-        token: 'NIM',
-        amountMinor: input.amountMinor,
-        recipientAddress: input.recipientAddress,
-        allocationMode: input.allocationMode,
-        status: 'open',
-        participants,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }
-      records.set(slug, tab)
-      return { tabId: slug, slug, participantSlotIds: participants.map(({ id }) => id) }
-    },
-    async getTabBySlug(slug) {
-      return records.get(slug) ?? null
-    },
-    async getOrganizerTab(slug) {
-      return records.get(slug) ?? null
-    },
+    configured: true,
+    createTab: (input) => client.mutation(anyApi.tabs.createTab, input),
+    getTabBySlug: (slug) => client.query(anyApi.tabs.getTabBySlug, { slug }),
+    getOrganizerTab: (slug, ownerSecret) => client.query(
+      anyApi.tabs.getOrganizerTab,
+      ownerSecret ? { slug, ownerSecret } : { slug },
+    ),
   }
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {
-  const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined
-  const client = useMemo(() => convexUrl ? new ConvexReactClient(convexUrl) : null, [convexUrl])
-  const backend = useMemo<TabBackend>(() => {
-    if (!client) return createLocalBackend()
-    return {
-      configured: true,
-      createTab: (input) => client.mutation(anyApi.tabs.createTab, input),
-      getTabBySlug: (slug) => client.query(anyApi.tabs.getTabBySlug, { slug }),
-      getOrganizerTab: (slug, ownerSecretHash) => client.query(anyApi.tabs.getOrganizerTab, { slug, ownerSecretHash }),
-    }
-  }, [client])
+  let convexUrl: string
+  try {
+    convexUrl = requireConvexUrl(import.meta.env.VITE_CONVEX_URL as string | undefined)
+  } catch (error) {
+    return <ConfigurationError message={error instanceof Error ? error.message : missingConvexUrlMessage} />
+  }
+
+  return <ConfiguredAppProviders convexUrl={convexUrl}>{children}</ConfiguredAppProviders>
+}
+
+function ConfiguredAppProviders({ convexUrl, children }: { convexUrl: string; children: ReactNode }) {
+  const client = useMemo(() => new ConvexReactClient(convexUrl), [convexUrl])
+  const backend = useMemo(() => createConvexBackend(client), [client])
 
   const content = <BackendContext.Provider value={backend}>{children}</BackendContext.Provider>
-  return client ? <ConvexProvider client={client}>{content}</ConvexProvider> : content
+  return <ConvexProvider client={client}>{content}</ConvexProvider>
+}
+
+function ConfigurationError({ message }: { message: string }) {
+  return (
+    <div className="page state-page" role="alert">
+      <p className="eyebrow">CONFIGURATION REQUIRED</p>
+      <h1>Tab needs Convex</h1>
+      <p>{message}</p>
+    </div>
+  )
 }
 
 export function useTabBackend(): TabBackend {

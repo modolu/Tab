@@ -16,8 +16,8 @@ export default function OrganizerPage() {
 
   useEffect(() => {
     let active = true
-    const ownerSecretHash = sessionStorage.getItem(`tab-owner-hash:${slug}`) ?? undefined
-    backend.getOrganizerTab(slug, ownerSecretHash).then((result) => {
+    const ownerSecret = sessionStorage.getItem(`tab-owner-secret:${slug}`) ?? undefined
+    backend.getOrganizerTab(slug, ownerSecret).then((result) => {
       if (active) { setTab(result); setLoading(false) }
     }).catch(() => {
       if (active) { setError('This organizer view could not be loaded.'); setLoading(false) }

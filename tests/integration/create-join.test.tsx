@@ -9,7 +9,9 @@ const modules = import.meta.glob('../../convex/**/*.*s')
 describe('Phase 1 Convex create and join flow', () => {
   it('persists a Tab and all unpaid participant slots, then retrieves it publicly', async () => {
     const t = convexTest(schema, modules)
-    const created = await t.mutation(anyApi.tabs.createTab, tabFixture)
+    const ownerSecret = 'test-owner-secret'
+    const ownerSecretHash = 'a56960c704373746a582730e01ba3f3a19564820c3f14bd87c2393bf334cbf35'
+    const created = await t.mutation(anyApi.tabs.createTab, { ...tabFixture, ownerSecretHash })
     const publicTab = await t.query(anyApi.tabs.getTabBySlug, { slug: created.slug })
 
     expect(publicTab).not.toBeNull()
@@ -20,7 +22,13 @@ describe('Phase 1 Convex create and join flow', () => {
     expect(publicTab).not.toHaveProperty('ownerSecretHash')
     expect(publicTab?.participants.reduce((sum, slot) => sum + BigInt(slot.amountMinor), 0n)).toBe(BigInt(tabFixture.amountMinor))
     await expect(t.query(anyApi.tabs.getOrganizerTab, { slug: created.slug })).resolves.toBeNull()
-    await expect(t.query(anyApi.tabs.getOrganizerTab, { slug: created.slug, ownerSecretHash: tabFixture.ownerSecretHash })).resolves.not.toBeNull()
+    await expect(t.query(anyApi.tabs.getOrganizerTab, { slug: created.slug, ownerSecret: ownerSecretHash })).resolves.toBeNull()
+    await expect(t.query(anyApi.tabs.getOrganizerTab, { slug: created.slug, ownerSecret: 'different-secret' })).resolves.toBeNull()
+    await expect(t.query(anyApi.tabs.getOrganizerTab, { slug: created.slug, ownerSecret })).resolves.not.toBeNull()
+
+    const storedTab = await t.run(async (ctx) => ctx.db.query('tabs').withIndex('by_slug', (q) => q.eq('slug', created.slug)).unique())
+    expect(storedTab.ownerSecretHash).toBe(ownerSecretHash)
+    expect(JSON.stringify(storedTab)).not.toContain(ownerSecret)
   })
 
   it('rejects invalid custom allocations before persistence', async () => {

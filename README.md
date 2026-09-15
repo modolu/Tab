@@ -13,7 +13,7 @@ npm install
 npm run dev -- --host
 ```
 
-For Convex persistence, set `VITE_CONVEX_URL` in `.env.local` to the URL for a Convex deployment. Without it, the app uses an explicit in-memory local preview so the UI remains runnable. Open the Vite Network URL in Nimiq Pay for mobile WebView testing. See [ARCHITECTURE.md](./ARCHITECTURE.md) and [PRODUCT_BRIEF.md](./PRODUCT_BRIEF.md) for the technical and product source of truth.
+For Convex persistence, set `VITE_CONVEX_URL` in `.env.local` to the URL for a Convex deployment. The app shows an actionable configuration error if it is missing; it never substitutes in-memory persistence. Open the Vite Network URL in Nimiq Pay for mobile WebView testing. See [ARCHITECTURE.md](./ARCHITECTURE.md) and [PRODUCT_BRIEF.md](./PRODUCT_BRIEF.md) for the technical and product source of truth.
 
 To run Convex locally against a configured deployment, use `npx convex dev` in a separate terminal. The Convex schema and functions live in `convex/`.
 
