@@ -1,30 +1,85 @@
 # Tab
 
-Tab is a Nimiq Pay Mini App for collecting one shared obligation from multiple contributors through direct, non-custodial NIM payments.
+Shared costs, settled.
 
-## Current state
+Tab is a Nimiq Pay Mini App for turning one group expense into a clear, shareable flow: create the amount, assign shares, send one link, and receive direct NIM payments without holding anyone's funds.
 
-Phase 2 is implemented: participants claim a slot with an explicitly connected Nimiq account, review and approve an exact NIM payment, and see the submitted transaction independently verified before the slot becomes paid. Convex reactive queries update the organizer view and settle the Tab after every slot is verified.
+## Why Tab
 
-## Development
+Splitwise is useful for tracking balances over time. Tab is deliberately smaller and more immediate: one obligation, one recipient, and a verified path to settled. Everyone sees the same progress, and the organizer does not need to chase screenshots or reconcile promises.
+
+## How it works
+
+1. Create a Tab with a purpose, total, recipient, and participant shares.
+2. Share the participant link or open it through Nimiq Pay.
+3. Each participant selects their assigned slot, explicitly connects Nimiq, reviews the exact amount, and approves a native NIM payment.
+4. Convex records the transaction hash, then independently checks the Nimiq network, recipient, amount, reference, execution result, and macro-block finality.
+5. Verified shares become Paid. When every share is verified, the Tab becomes Settled.
+
+The physical P0 flow has been proven on a real iPhone inside Nimiq Pay using Nimiq TestAlbatross testnet. Mainnet support is configuration-ready but has not been claimed as physically tested here.
+
+## Nimiq Pay and security
+
+Tab uses the official `@nimiq/mini-app-sdk` only at the wallet boundary. `listAccounts()` is called after an explicit user action, and `sendBasicTransactionWithData()` opens native Nimiq Pay approval. Tab never requests seed phrases, stores private keys, or signs on a server. Payments go directly to the configured recipient.
+
+A transaction hash means submitted, not paid. Only the Convex verifier can mark a payment confirmed and a slot paid. Organizer ownership continues to use the client-generated secret/session model; public Tab queries exclude the owner secret hash.
+
+## Local setup
 
 ```bash
 npm install
+cp .env.example .env.local
 npm run dev -- --host
 ```
 
-For Convex persistence, set `VITE_CONVEX_URL` in `.env.local` to the URL for a Convex deployment. The app shows an actionable configuration error if it is missing; it never substitutes in-memory persistence. Configure the Convex deployment with `NIMIQ_NETWORK` and `NIMIQ_RPC_URL` using `npx convex env set`; the values must describe the same network. Use `NIMIQ_NETWORK=testnet` with `https://rpc.testnet.nimiqwatch.com`, or `NIMIQ_NETWORK=mainnet` with `https://rpc.nimiqwatch.com`. The endpoint remains environment-configurable; use a dedicated authenticated endpoint for production where possible, with optional `NIMIQ_RPC_USERNAME` and `NIMIQ_RPC_PASSWORD` kept server-side. Open the Vite Network URL in Nimiq Pay for mobile WebView testing. See [ARCHITECTURE.md](./ARCHITECTURE.md) and [PRODUCT_BRIEF.md](./PRODUCT_BRIEF.md) for the technical and product source of truth.
+Set `VITE_CONVEX_URL` in `.env.local` to a Convex deployment URL. The app reports missing configuration instead of substituting in-memory persistence. Run `npx convex dev` in a separate terminal when developing Convex functions.
 
-To run Convex locally against a configured deployment, use `npx convex dev` in a separate terminal. The Convex schema and functions live in `convex/`.
+Configure the Convex deployment with `npx convex env set`:
 
-## Scope
+```text
+NIMIQ_NETWORK=testnet
+NIMIQ_RPC_URL=https://rpc.testnet.nimiqwatch.com
+```
 
-P0 is deliberately NIM-only:
+The documented example endpoints are:
 
-`Create Tab → allocate shares → share → participant opens → pay NIM → verify onchain → realtime status → settled`
+```text
+Mainnet: https://rpc.nimiqwatch.com
+Testnet: https://rpc.testnet.nimiqwatch.com
+```
 
-USDT, recurring billing, AI features, complex authentication, debt-netting, and additional chains are out of scope for the competition MVP.
+The endpoint remains environment-configurable. Use a dedicated authenticated provider for production where possible; optional `NIMIQ_RPC_USERNAME` and `NIMIQ_RPC_PASSWORD` stay server-side and must never be placed in browser environment variables. The official local Mini App flow may use the Vite LAN URL over HTTP in Nimiq Pay.
 
-Verification uses the current PoS JSON-RPC methods `getTransactionByHash`, `getTransactionFromMempool`, `getLatestBlock`, `getMacroBlockAfter`, and `getNetworkId`. A transaction is shown as paid only when its recipient, sender, Luna value, recipient data reference, execution result, configured network, and macro-block finality all match. The verifier checks `getLatestBlock.network` before transaction lookup: `TestAlbatross` is required for testnet and `MainAlbatross` for mainnet. Finality is determined directly from the RPC: `getMacroBlockAfter(transaction.blockNumber)` returns a macro-block height, and the transaction is final when `getLatestBlock.number` reaches that height. A missing or mempool transaction remains confirming and is retried six times with bounded delays (5s, 10s, 20s, 40s, 60s); exhausted or unavailable verification leaves the payment failed but the slot pending, so the existing transaction can be retried without sending another payment. The reference format is `TAB:<tab-short-id>:<slot-short-id>` and is validated as UTF-8 ≤64 bytes.
+## Architecture
 
-For development-only verifier diagnostics, set `NIMIQ_ENABLE_DEV_DIAGNOSTICS=true` on the Convex deployment, then run `npx convex run verification:devDiagnoseNimiqPayment '{"paymentId":"<payment-id>"}'` or invoke `verification:devDiagnoseNimiqPayment` from the Convex dashboard Functions view. The action accepts only a stored payment ID, reads its stored transaction, performs four read-only RPC checks, and does not change payment state. Disable or remove this diagnostic action before production submission.
+The frontend is React + Vite. Convex provides the schema, mutations, reactive public queries, and server-side verification actions. The Nimiq provider adapter keeps wallet calls out of UI components. Internal money values remain integer Luna strings; conversion to the SDK's safe JavaScript number happens only at the transaction boundary.
+
+The payment reference is deterministic and compact: `TAB:<tab-short-id>:<slot-short-id>`, encoded as UTF-8 in at most 64 bytes. Verification uses `getLatestBlock`, `getTransactionByHash`, `getTransactionFromMempool`, and `getMacroBlockAfter`. A transaction is final when `getLatestBlock.number >= getMacroBlockAfter(transaction.blockNumber)`. Temporary absence or RPC failure remains retryable; exhausted verification never reopens a submitted slot for a second payment.
+
+For development-only verifier diagnostics, set `NIMIQ_ENABLE_DEV_DIAGNOSTICS=true` on the Convex deployment and run:
+
+```bash
+npx convex run verification:devDiagnoseNimiqPayment '{"paymentId":"<payment-id>"}'
+```
+
+This read-only action accepts only a stored payment ID, is environment-gated and disabled by default, and must be disabled or removed before production submission. It is not exposed in the public UI.
+
+## Commands
+
+```bash
+npm test
+npm run lint
+npm run typecheck
+npm run build
+npx convex dev --once
+```
+
+See [docs/QA_CHECKLIST.md](./docs/QA_CHECKLIST.md) for the manual mobile checklist. [ARCHITECTURE.md](./ARCHITECTURE.md) and [PRODUCT_BRIEF.md](./PRODUCT_BRIEF.md) remain the technical and product source of truth.
+
+## Competition scope
+
+The current P0 is intentionally NIM-only: create, split, share, pay, independently verify, and settle. USDT, Polygon and other chains, recurring billing, saved groups, notifications, social login, debt netting, AI, itemized allocation, chat, and analytics platforms are deferred. Lightweight aggregate counts can be read from existing Convex data for competition reporting; Tab does not collect unnecessary personal information.
+
+## License
+
+MIT. Built for the Nimiq Pay Mini App competition.

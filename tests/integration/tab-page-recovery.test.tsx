@@ -36,8 +36,8 @@ const tab: PublicTab = {
   ],
 }
 
-function renderTab(paymentStatuses: Record<string, PaymentStatus | null | undefined> = {}) {
-  vi.mocked(usePublicTab).mockReturnValue(tab)
+function renderTab(paymentStatuses: Record<string, PaymentStatus | null | undefined> = {}, tabOverride: PublicTab = tab) {
+  vi.mocked(usePublicTab).mockReturnValue(tabOverride)
   vi.mocked(usePaymentStatus).mockImplementation((_slug, slotId) => paymentStatuses[slotId])
   vi.mocked(useTabBackend).mockReturnValue({
     configured: true,
@@ -83,6 +83,25 @@ afterEach(() => {
 })
 
 describe('Tab participant recovery selection', () => {
+  it('shows verified progress for an open tab and the settled completion state', () => {
+    const progressTab: PublicTab = {
+      ...tab,
+      amountMinor: '200000',
+      participants: [
+        { id: 'slot-paid', label: 'Dolu', amountMinor: '100000', status: 'paid' },
+        { id: 'slot-open', label: 'Tester', amountMinor: '100000', status: 'unpaid' },
+      ],
+    }
+    const { unmount } = renderTab({}, progressTab)
+    expect(screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, ' ').includes('1 of 2 contributions verified · 1 NIM received') ?? false).some((element) => element.classList.contains('progress-copy'))).toBe(true)
+    unmount()
+
+    renderTab({}, { ...progressTab, status: 'settled', participants: progressTab.participants.map((participant) => ({ ...participant, status: 'paid' })) })
+    expect(screen.getByText('Tab settled').closest('section')).toHaveTextContent('Tab settled')
+    expect(screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, ' ').includes('2 of 2 contributions verified · 2 NIM received') ?? false).some((element) => element.classList.contains('progress-copy'))).toBe(true)
+    expect(screen.getByText(/No one left to chase/i)).toBeInTheDocument()
+  })
+
   it('keeps unpaid slots selectable and the unrelated Tester slot payment-ready', async () => {
     const user = userEvent.setup()
     renderTab({ 'slot-tester': null })
@@ -90,7 +109,7 @@ describe('Tab participant recovery selection', () => {
     await user.click(screen.getByRole('button', { name: /Tester.*10 NIM/i }))
 
     expect(screen.getByRole('button', { name: 'Connect Nimiq wallet' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Pay 10 NIM/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Pay 10 NIM$/i })).not.toBeInTheDocument()
     expect(connect).not.toHaveBeenCalled()
   })
 
@@ -103,7 +122,7 @@ describe('Tab participant recovery selection', () => {
     expect(screen.getByText(/Verifying onchain… Please do not submit another payment/i)).toBeInTheDocument()
     expect(screen.getByText(/Do not submit another payment/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect Nimiq wallet' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Pay 10 NIM/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Pay 10 NIM$/i })).not.toBeInTheDocument()
   })
 
   it('exposes retry for a pending failed payment without invoking wallet or submission APIs', async () => {
@@ -115,7 +134,7 @@ describe('Tab participant recovery selection', () => {
     expect(screen.getByText(/Verification needs to be retried/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry verification' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect Nimiq wallet' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Pay 10 NIM/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Pay 10 NIM$/i })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Retry verification' }))
 
@@ -128,7 +147,7 @@ describe('Tab participant recovery selection', () => {
     renderTab()
 
     expect(screen.queryByRole('button', { name: /Paid friend.*1 NIM/i })).not.toBeInTheDocument()
-    expect(screen.getByText('Paid', { exact: true })).toBeInTheDocument()
+    expect(screen.getByText(/Paid · verified onchain/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect Nimiq wallet' })).not.toBeInTheDocument()
   })
 })

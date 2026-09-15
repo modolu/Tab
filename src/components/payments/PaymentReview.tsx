@@ -22,8 +22,8 @@ export default function PaymentReview({ tab, participant, senderAddress, isSubmi
         <div><dt>Tab</dt><dd>{tab.title}</dd></div>
         <div><dt>Slot</dt><dd>{participant.label}</dd></div>
         <div><dt>Amount</dt><dd className="payment-amount">{formatLuna(participant.amountMinor)} NIM</dd></div>
-        <div><dt>Recipient</dt><dd>{abbreviate(tab.recipientAddress)}</dd></div>
-        <div><dt>Sender</dt><dd>{abbreviate(senderAddress)}</dd></div>
+        <div><dt>Recipient</dt><dd><details className="address-details"><summary>{abbreviate(tab.recipientAddress)}</summary><code>{tab.recipientAddress}</code></details></dd></div>
+        <div><dt>Sender</dt><dd><details className="address-details"><summary>{abbreviate(senderAddress)}</summary><code>{senderAddress}</code></details></dd></div>
       </dl>
       <p className="payment-note">Nimiq Pay will ask you to approve this exact transfer.</p>
       <button className="button button-primary button-large" type="button" onClick={onPay} disabled={isSubmitting}>

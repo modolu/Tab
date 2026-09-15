@@ -44,5 +44,5 @@ export default function PaymentResultPage() {
   )
 }
 
-function LoadingState() { return <div className="page state-page"><div className="loading-pulse" aria-hidden="true" /><p className="muted-label">Loading payment status…</p></div> }
+function LoadingState() { return <div className="page state-page" role="status" aria-live="polite" aria-busy="true"><div className="loading-pulse" aria-hidden="true" /><p className="muted-label">Loading payment status…</p></div> }
 function StateCard({ title, copy }: { title: string; copy: string }) { return <div className="page state-page"><div className="state-icon" aria-hidden="true">—</div><h2>{title}</h2><p>{copy}</p><Link className="button button-primary" to="/">Back home</Link></div> }

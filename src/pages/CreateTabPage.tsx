@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useTabBackend } from '../app/providers'
 import { allocateEqual } from '../lib/allocation'
@@ -23,6 +23,11 @@ export default function CreateTabPage() {
   const [participants, setParticipants] = useState<FormParticipant[]>(initialParticipants)
   const [error, setError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  const errorRef = useRef<HTMLParagraphElement>(null)
+
+  useEffect(() => {
+    if (error) errorRef.current?.focus()
+  }, [error])
 
   const totalMinor = useMemo(() => {
     try { return parseNimToLuna(totalNim) } catch { return null }
@@ -97,18 +102,18 @@ export default function CreateTabPage() {
       <form onSubmit={handleSubmit} noValidate>
         <section className="form-section" aria-labelledby="details-heading">
           <div className="section-heading"><span className="step-number">1</span><div><h3 id="details-heading">What’s this for?</h3><p>Give your shared cost a clear name.</p></div></div>
-          <label>Purpose<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Studio dinner" required /></label>
-          <label>Note <span className="optional">Optional</span><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add a little context" rows={2} /></label>
+          <label htmlFor="tab-title">Purpose<input id="tab-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Studio dinner" required /></label>
+          <label htmlFor="tab-note">Note <span className="optional">Optional</span><textarea id="tab-note" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add a little context" rows={2} /></label>
         </section>
 
         <section className="form-section" aria-labelledby="amount-heading">
           <div className="section-heading"><span className="step-number">2</span><div><h3 id="amount-heading">How much?</h3><p>The total everyone will contribute.</p></div></div>
-          <label>Total amount<div className="amount-input"><input inputMode="decimal" value={totalNim} onChange={(event) => setTotalNim(event.target.value)} placeholder="0.00" required /><span>NIM</span></div></label>
+          <label htmlFor="tab-total">Total amount<div className="amount-input"><input id="tab-total" inputMode="decimal" value={totalNim} onChange={(event) => setTotalNim(event.target.value)} placeholder="0.00" required /><span>NIM</span></div></label>
         </section>
 
         <section className="form-section" aria-labelledby="recipient-heading">
           <div className="section-heading"><span className="step-number">3</span><div><h3 id="recipient-heading">Who receives it?</h3><p>Payments go directly to this Nimiq address.</p></div></div>
-          <label>Recipient address<input className="address-input" value={recipientAddress} onChange={(event) => setRecipientAddress(event.target.value)} placeholder="NQ…" autoCapitalize="characters" required /></label>
+          <label htmlFor="tab-recipient">Recipient address<input id="tab-recipient" className="address-input" value={recipientAddress} onChange={(event) => setRecipientAddress(event.target.value)} placeholder="NQ…" autoCapitalize="characters" required /></label>
         </section>
 
         <section className="form-section" aria-labelledby="participants-heading">
@@ -128,11 +133,16 @@ export default function CreateTabPage() {
             <button type="button" className={allocationMode === 'equal' ? 'selected' : ''} onClick={() => setAllocationMode('equal')}>Split equally</button>
             <button type="button" className={allocationMode === 'custom' ? 'selected' : ''} onClick={() => setAllocationMode('custom')}>Custom shares</button>
           </div>
-          {allocationMode === 'equal' && totalMinor !== null && <div className="allocation-preview"><span>Each share</span><strong>{participants.length ? formatLuna(equalAllocations[0]) : '—'} NIM{equalAllocations.some((amount) => amount !== equalAllocations[0]) && <small> · remainder shared fairly</small>}</strong></div>}
-          {allocationMode === 'custom' && <div className={`allocation-preview ${remaining !== null && remaining < 0n ? 'is-error' : ''}`}><span>{remaining === null ? 'Enter every share' : remaining === 0n ? 'All allocated' : 'Remaining'}</span><strong>{remaining === null ? '—' : `${formatLuna(remaining < 0n ? -remaining : remaining)} NIM`} {remaining !== null && remaining < 0n ? 'over' : ''}</strong></div>}
+          {allocationMode === 'equal' && totalMinor !== null && <div className="allocation-preview" aria-live="polite"><span>Each share</span><strong>{participants.length ? formatLuna(equalAllocations[0]) : '—'} NIM{equalAllocations.some((amount) => amount !== equalAllocations[0]) && <small> · remainder shared fairly</small>}</strong></div>}
+          {allocationMode === 'custom' && <div className={`allocation-preview ${remaining !== null && remaining < 0n ? 'is-error' : ''}`} aria-live="polite"><span>{remaining === null ? 'Enter every share' : remaining === 0n ? 'Fully allocated ✓' : 'Remaining'}</span><strong>{remaining === null ? '—' : `${formatLuna(remaining < 0n ? -remaining : remaining)} NIM`} {remaining !== null && remaining < 0n ? 'over' : ''}</strong></div>}
         </section>
 
-        {error && <p className="form-error" role="alert">{error}</p>}
+        <section className="review-card" aria-labelledby="review-heading">
+          <div className="section-title-row"><div><p className="muted-label">Final check</p><h3 id="review-heading">Ready to create?</h3></div><span className="recipient-badge" aria-hidden="true">NIM</span></div>
+          <p>{title.trim() || 'Your shared cost'} · {totalMinor === null ? 'Add a total' : `${formatLuna(totalMinor)} NIM`} · {participants.length} contributor{participants.length === 1 ? '' : 's'}</p>
+          <span className="review-note">You can share the payment link after creation.</span>
+        </section>
+        {error && <p ref={errorRef} className="form-error" role="alert" tabIndex={-1}>{error}</p>}
         <button className="button button-primary button-large submit-button" type="submit" disabled={isCreating}>{isCreating ? 'Creating…' : 'Review and create Tab'} <span aria-hidden="true">→</span></button>
       </form>
     </div>
