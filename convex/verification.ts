@@ -48,7 +48,7 @@ export type VerifiedRpcTransaction = {
   networkId: number
 }
 
-type RpcBlock = { number: number; batch: number; type: 'micro' | 'macro'; network: string }
+export type RpcLatestBlock = { number: number; network: string }
 
 export type VerificationOutcome =
   | { kind: 'confirmed'; reason?: string; code?: string }
@@ -72,6 +72,8 @@ function isRecord(value: unknown): value is RpcRecord {
 }
 
 export class RpcResponseInvalidError extends Error {
+  readonly code = 'rpc_response_invalid' as const
+
   constructor(message: string) {
     super(message)
     this.name = 'RpcResponseInvalidError'
@@ -178,16 +180,16 @@ export function normalizeRpcTransaction(input: unknown, options: { allowPending?
   }
 }
 
-function normalizeRpcBlock(input: unknown): RpcBlock {
-  if (!isRecord(input)) throw new RpcResponseInvalidError('Nimiq RPC returned an invalid block object.')
-  const type = input.type
-  if (type !== 'micro' && type !== 'macro') throw new RpcResponseInvalidError('Nimiq RPC block type is missing or invalid.')
+export function normalizeRpcLatestBlock(input: unknown): RpcLatestBlock {
+  if (!isRecord(input)) throw new RpcResponseInvalidError('Nimiq RPC returned an invalid latest block object.')
   return {
     number: requiredInteger(input.number, 'number'),
-    batch: requiredInteger(input.batch, 'batch'),
-    type,
     network: requiredString(input.network, 'network'),
   }
+}
+
+export function normalizeMacroBlockAfter(input: unknown): number {
+  return requiredInteger(input, 'macroBlockAfter')
 }
 
 export function expectedRpcNetwork(network: 'testnet' | 'mainnet'): 'TestAlbatross' | 'MainAlbatross' {
@@ -222,18 +224,14 @@ export function evaluateTransactionLookup(input: { transactionFound: boolean; in
   return null
 }
 
-function hasReachedMacroFinality(transactionBlock: RpcBlock, latestBlock: RpcBlock): boolean {
-  const transactionBatch = integerValue(transactionBlock.batch)
-  const latestBatch = integerValue(latestBlock.batch)
-  if (transactionBatch === null || latestBatch === null) return false
-  // Nimiq PoS finality is established by the macro block closing the transaction's batch.
-  return latestBatch > transactionBatch || (latestBatch === transactionBatch && latestBlock.type === 'macro')
+export function evaluateMacroBlockFinality(input: { latestBlockNumber: number; macroBlockAfterTransaction: number }): boolean {
+  return input.latestBlockNumber >= input.macroBlockAfterTransaction
 }
 
 export function evaluateNimiqTransaction(input: {
   transaction: VerifiedRpcTransaction
-  transactionBlock: RpcBlock | null
-  latestBlock: RpcBlock | null
+  macroBlockAfterTransaction: number | null
+  latestBlock: RpcLatestBlock | null
   rpcNetworkId: unknown
   expectedNetwork: 'testnet' | 'mainnet'
   expectedSender: string
@@ -263,8 +261,11 @@ export function evaluateNimiqTransaction(input: {
   if (transaction.executionResult !== true) {
     return { kind: 'invalid', code: 'transaction_execution_failed', reason: 'The transaction was not successfully executed onchain.' }
   }
-  if (!input.transactionBlock || !hasReachedMacroFinality(input.transactionBlock, input.latestBlock)) {
-    // Nimiq finality is reached after the next macro block closes the transaction's batch.
+  if (input.macroBlockAfterTransaction === null || !evaluateMacroBlockFinality({
+    latestBlockNumber: input.latestBlock.number,
+    macroBlockAfterTransaction: input.macroBlockAfterTransaction,
+  })) {
+    // Nimiq finality is reached once the latest block reaches the macro block after the transaction.
     return { kind: 'confirming', code: 'transaction_not_finalized', reason: 'Payment found onchain; waiting for Nimiq finality.' }
   }
   return { kind: 'confirmed' }
@@ -328,6 +329,14 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
   }
 }
 
+async function getMacroBlockAfter(blockNumber: number): Promise<number> {
+  return normalizeMacroBlockAfter(await rpcCall<unknown>('getMacroBlockAfter', [blockNumber]))
+}
+
+async function getLatestBlock(): Promise<RpcLatestBlock> {
+  return normalizeRpcLatestBlock(await rpcCall<unknown>('getLatestBlock', [false]))
+}
+
 async function findTransaction(hash: string): Promise<{ transaction: VerifiedRpcTransaction | null; inMempool: boolean }> {
   try {
     const raw = await rpcCall<RawRpcTransaction | null>('getTransactionByHash', [hash])
@@ -356,7 +365,7 @@ export const verifyNimiqTransaction = internalAction({
     let outcome: VerificationOutcome
     try {
       const expectedNetwork = configuredNetwork()
-      const latestBlock = normalizeRpcBlock(await rpcCall<unknown>('getLatestBlock', [false]))
+      const latestBlock = await getLatestBlock()
       const networkOutcome = evaluateRpcNetwork({ actualNetwork: latestBlock.network, expectedNetwork })
       if (networkOutcome.kind === 'failed') {
         console.warn('Nimiq RPC network mismatch or unidentified network', {
@@ -372,13 +381,13 @@ export const verifyNimiqTransaction = internalAction({
         } else {
           const transaction = found.transaction
           if (!transaction) throw new RpcTemporaryError('Nimiq RPC returned no transaction.', 'rpc_unavailable')
-          const [transactionBlock, rpcNetworkId] = await Promise.all([
-            transaction.blockNumber === null ? Promise.resolve(null) : rpcCall<unknown>('getBlockByNumber', [transaction.blockNumber, false]).then(normalizeRpcBlock),
+          const [macroBlockAfterTransaction, rpcNetworkId] = await Promise.all([
+            transaction.blockNumber === null ? Promise.resolve(null) : getMacroBlockAfter(transaction.blockNumber),
             rpcCall<unknown>('getNetworkId', []).then((value) => requiredInteger(value, 'networkId')),
           ])
           outcome = evaluateNimiqTransaction({
             transaction,
-            transactionBlock,
+            macroBlockAfterTransaction,
             latestBlock,
             rpcNetworkId,
             expectedNetwork,

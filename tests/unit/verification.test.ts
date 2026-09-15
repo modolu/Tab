@@ -3,10 +3,13 @@ import { canShowPaymentAction } from '../../src/features/settlement/paymentState
 import {
   decodeRecipientDataHex,
   evaluateNimiqTransaction,
+  evaluateMacroBlockFinality,
   evaluateRpcNetwork,
   evaluateTransactionLookup,
   isRetryableRpcStatus,
   normalizeRpcTransaction,
+  normalizeRpcLatestBlock,
+  normalizeMacroBlockAfter,
   parseRpcSuccess,
   RpcResponseInvalidError,
   type VerifiedRpcTransaction,
@@ -35,9 +38,18 @@ const expected = {
   expectedAmountMinor: '1000000',
   expectedReference: 'TAB:0123456789abcdef:s0',
   rpcNetworkId: 7,
-  latestBlock: { number: 200, batch: 11, type: 'micro' as const, network: 'TestAlbatross' },
-  transactionBlock: { number: 100, batch: 10, type: 'micro' as const, network: 'TestAlbatross' },
+  latestBlock: { number: 200, network: 'TestAlbatross' },
+  macroBlockAfterTransaction: 150,
   transaction: expectedTransaction,
+}
+
+function captureError(action: () => unknown): unknown {
+  try {
+    action()
+    return null
+  } catch (error) {
+    return error
+  }
 }
 
 describe('raw Nimiq JSON-RPC compatibility', () => {
@@ -71,6 +83,17 @@ describe('raw Nimiq JSON-RPC compatibility', () => {
     expect(() => decodeRecipientDataHex('zz')).toThrow(RpcResponseInvalidError)
     expect(() => decodeRecipientDataHex('c328')).toThrow(RpcResponseInvalidError)
   })
+
+  it('keeps macro-block and latest-block response shapes separate', () => {
+    const macroResponse = { jsonrpc: '2.0', result: { data: 11512590, metadata: null }, id: 3 }
+    const latestResponse = { jsonrpc: '2.0', result: { data: { number: 11528619, network: 'TestAlbatross' }, metadata: null }, id: 4 }
+    expect(normalizeMacroBlockAfter(parseRpcSuccess(macroResponse))).toBe(11512590)
+    expect(normalizeRpcLatestBlock(parseRpcSuccess(latestResponse))).toEqual({ number: 11528619, network: 'TestAlbatross' })
+    const malformedMacroError = captureError(() => normalizeMacroBlockAfter(parseRpcSuccess({ ...macroResponse, result: { data: { number: 11512590 }, metadata: null } })))
+    const malformedLatestError = captureError(() => normalizeRpcLatestBlock(parseRpcSuccess({ ...latestResponse, result: { data: { network: 'TestAlbatross' }, metadata: null } })))
+    expect(malformedMacroError).toMatchObject({ code: 'rpc_response_invalid' })
+    expect(malformedLatestError).toMatchObject({ code: 'rpc_response_invalid' })
+  })
 })
 
 describe('independent Nimiq transaction verification', () => {
@@ -78,8 +101,8 @@ describe('independent Nimiq transaction verification', () => {
     const transaction = normalizeRpcTransaction(parseRpcSuccess(physicalNimiqTransactionResponse))
     expect(evaluateNimiqTransaction({
       transaction,
-      transactionBlock: { number: 11512531, batch: 141504, type: 'micro', network: 'TestAlbatross' },
-      latestBlock: { number: 11512590, batch: 141505, type: 'micro', network: 'TestAlbatross' },
+      macroBlockAfterTransaction: 11512590,
+      latestBlock: { number: 11528619, network: 'TestAlbatross' },
       rpcNetworkId: 5,
       expectedNetwork: 'testnet',
       expectedSender: 'NQ2111111111111111111111111111111111',
@@ -125,8 +148,14 @@ describe('independent Nimiq transaction verification', () => {
   it('keeps transaction lookup and finality behavior retryable when not ready', () => {
     expect(evaluateTransactionLookup({ transactionFound: false, inMempool: false })).toMatchObject({ kind: 'confirming', code: 'rpc_transaction_not_found' })
     expect(evaluateTransactionLookup({ transactionFound: true, inMempool: true })).toMatchObject({ kind: 'confirming', code: 'transaction_in_mempool' })
-    expect(evaluateNimiqTransaction({ ...expected, transactionBlock: null })).toMatchObject({ kind: 'confirming', code: 'transaction_not_finalized' })
-    expect(evaluateNimiqTransaction({ ...expected, latestBlock: { ...expected.latestBlock, batch: 10 } })).toMatchObject({ kind: 'confirming', code: 'transaction_not_finalized' })
+    expect(evaluateNimiqTransaction({ ...expected, macroBlockAfterTransaction: null })).toMatchObject({ kind: 'confirming', code: 'transaction_not_finalized' })
+    expect(evaluateNimiqTransaction({ ...expected, latestBlock: { ...expected.latestBlock, number: 149 } })).toMatchObject({ kind: 'confirming', code: 'transaction_not_finalized' })
+  })
+
+  it('uses the official macro-after height for finality', () => {
+    expect(evaluateMacroBlockFinality({ latestBlockNumber: 11512589, macroBlockAfterTransaction: 11512590 })).toBe(false)
+    expect(evaluateMacroBlockFinality({ latestBlockNumber: 11512590, macroBlockAfterTransaction: 11512590 })).toBe(true)
+    expect(evaluateMacroBlockFinality({ latestBlockNumber: 11528619, macroBlockAfterTransaction: 11512590 })).toBe(true)
   })
 
   it('treats rate limits and temporary server failures as retryable RPC errors', () => {
