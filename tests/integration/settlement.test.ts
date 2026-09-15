@@ -1,10 +1,11 @@
 /// <reference types="vite/client" />
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { convexTest } from 'convex-test'
 import { anyApi } from 'convex/server'
 import { internal } from '../../convex/_generated/api'
 import schema from '../../convex/schema'
 import { tabFixture, VALID_RECIPIENT } from '../fixtures/tab'
+import { physicalNimiqTransactionHash, physicalNimiqTransactionResponse } from '../fixtures/nimiq-physical-transaction'
 
 const modules = import.meta.glob('../../convex/**/*.*s')
 const WALLET = 'NQ2111111111111111111111111111111111'
@@ -134,5 +135,50 @@ describe('Phase 2 slot claiming and payment recording', () => {
     const attempt = await t.run(async (ctx) => ctx.db.query('paymentVerificationAttempts').withIndex('by_payment', (q) => q.eq('paymentId', submitted.paymentId)).unique())
     expect(attempt).toMatchObject({ result: 'failed', code: 'rpc_http_403', reason: 'getLatestBlock returned HTTP 403' })
     expect(await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId })).toMatchObject({ status: 'failed', verificationCode: 'rpc_http_403', verificationReason: 'Nimiq verification failed. Retry verification.' })
+  })
+
+  it('runs the production retry path to confirm the stored physical transaction', async () => {
+    const previousNetwork = process.env.NIMIQ_NETWORK
+    const previousUrl = process.env.NIMIQ_RPC_URL
+    process.env.NIMIQ_NETWORK = 'testnet'
+    process.env.NIMIQ_RPC_URL = 'https://rpc.testnet.nimiqwatch.com'
+    const rpcResponse = (data: unknown) => JSON.stringify({ jsonrpc: '2.0', result: { data, metadata: null }, id: 1 })
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = JSON.parse(String(init?.body)).method as string
+      if (method === 'getLatestBlock') return { ok: true, status: 200, text: async () => rpcResponse({ number: 11528619, network: 'TestAlbatross' }) } as Response
+      if (method === 'getTransactionByHash') return { ok: true, status: 200, text: async () => rpcResponse(physicalNimiqTransactionResponse.result.data) } as Response
+      if (method === 'getMacroBlockAfter') return { ok: true, status: 200, text: async () => rpcResponse(11512590) } as Response
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      const t = convexTest(schema, modules)
+      const created = await create(t)
+      const slotId = created.participantSlotIds[0]
+      await t.run(async (ctx) => {
+        await ctx.db.patch('tabs', created.tabId, { slug: '330ec603fb514e51', recipientAddress: 'NQ76 BYR0 G05A A71R U337 EQ3X 4EVE 97J8 3Q11' })
+        await ctx.db.patch('participantSlots', slotId, { amountMinor: '100000' })
+      })
+      await t.mutation(anyApi.participants.claimParticipantSlot, { slug: '330ec603fb514e51', slotId, walletAddress: WALLET })
+      const submitted = await t.mutation(anyApi.payments.recordSubmittedPayment, { slug: '330ec603fb514e51', slotId, senderAddress: WALLET, txHash: physicalNimiqTransactionHash })
+      await t.run(async (ctx) => ctx.db.patch('payments', submitted.paymentId, { status: 'failed', verificationAttempts: 99, verificationScheduledAt: 0 }))
+
+      const retry = await t.mutation(anyApi.payments.retryVerification, { slug: '330ec603fb514e51', slotId })
+      const scheduledAt = await t.run(async (ctx) => (await ctx.db.get(retry.paymentId))?.verificationScheduledAt)
+      await t.action(internal.verification.verifyNimiqTransaction, { paymentId: retry.paymentId, scheduledAt })
+
+      expect(await t.query(anyApi.payments.getPaymentStatus, { slug: '330ec603fb514e51', slotId })).toMatchObject({ status: 'confirmed', verificationCode: 'verified', slotStatus: 'paid', txHash: physicalNimiqTransactionHash })
+      expect((await t.query(anyApi.tabs.getTabBySlug, { slug: '330ec603fb514e51' }))?.participants[0].status).toBe('paid')
+      expect((await t.run(async (ctx) => ctx.db.get(retry.paymentId)))?.verificationAttempts).toBe(100)
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+      expect(fetchMock.mock.calls.some(([, init]) => String(init?.body).includes(physicalNimiqTransactionHash))).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+      if (previousNetwork === undefined) delete process.env.NIMIQ_NETWORK
+      else process.env.NIMIQ_NETWORK = previousNetwork
+      if (previousUrl === undefined) delete process.env.NIMIQ_RPC_URL
+      else process.env.NIMIQ_RPC_URL = previousUrl
+    }
   })
 })

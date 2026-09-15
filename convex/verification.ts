@@ -91,7 +91,7 @@ export type RpcCallContext = {
 
 type RpcCaller = <T>(method: string, params: unknown[], context: RpcCallContext) => Promise<T>
 
-type StoredPaymentDiagnosticContext = {
+export type StoredNimiqPaymentContext = {
   payment: { txHash: string; senderAddress: string }
   tab: { slug: string; recipientAddress: string }
   slot: { _id: Id<'participantSlots'>; amountMinor: string; shortId?: string }
@@ -112,6 +112,30 @@ export type NimiqPaymentDiagnostic = {
   senderType: number | null
   rpcStatuses: RpcDiagnosticStatus[]
 }
+
+export type TransactionChecks = {
+  recipientMatches: boolean
+  senderMatches: boolean
+  amountMatches: boolean
+  referenceMatches: boolean
+  executionResult: boolean
+}
+
+export type NimiqVerificationTrace = {
+  configuredNetwork: string
+  observedNetwork: string | null
+  transactionFound: boolean
+  transaction: VerifiedRpcTransaction | null
+  macroBlockAfter: number | null
+  latestBlock: RpcLatestBlock | null
+  checks: TransactionChecks | null
+}
+
+export type StoredNimiqVerificationResult =
+  | { kind: 'confirmed'; txHash: string; confirmedAt: number; trace: NimiqVerificationTrace }
+  | { kind: 'confirming'; code: string; reason: string; diagnostic?: string; trace: NimiqVerificationTrace }
+  | { kind: 'invalid'; code: string; reason: string; diagnostic?: string; trace: NimiqVerificationTrace }
+  | { kind: 'retryable_error'; code: string; reason: string; diagnostic?: string; trace: NimiqVerificationTrace }
 
 const rpcDiagnosticStatus = v.object({
   method: v.string(),
@@ -449,11 +473,31 @@ export function evaluateMacroBlockFinality(input: { latestBlockNumber: number; m
   return input.latestBlockNumber >= input.macroBlockAfterTransaction
 }
 
+function transactionChecks(input: {
+  transaction: VerifiedRpcTransaction
+  expectedSender: string
+  expectedRecipient: string
+  expectedAmountMinor: string
+  expectedReference: string
+}): TransactionChecks {
+  const actualRecipient = normalizeAddress(input.transaction.recipientAddress)
+  const expectedRecipient = normalizeAddress(input.expectedRecipient)
+  const actualSender = normalizeAddress(input.transaction.senderAddress)
+  const expectedSender = normalizeAddress(input.expectedSender)
+  return {
+    recipientMatches: actualRecipient !== null && expectedRecipient !== null && actualRecipient === expectedRecipient,
+    senderMatches: actualSender !== null && expectedSender !== null && actualSender === expectedSender,
+    amountMatches: input.transaction.valueMinor === BigInt(input.expectedAmountMinor).toString(),
+    referenceMatches: input.transaction.recipientData === input.expectedReference,
+    executionResult: input.transaction.executionResult,
+  }
+}
+
 export function evaluateNimiqTransaction(input: {
   transaction: VerifiedRpcTransaction
   macroBlockAfterTransaction: number | null
   latestBlock: RpcLatestBlock | null
-  rpcNetworkId: unknown
+  rpcNetworkId?: unknown
   expectedNetwork: 'testnet' | 'mainnet'
   expectedSender: string
   expectedRecipient: string
@@ -464,22 +508,23 @@ export function evaluateNimiqTransaction(input: {
   if (!input.latestBlock || !networkMatches(input.latestBlock.network, input.expectedNetwork)) {
     return evaluateRpcNetwork({ actualNetwork: input.latestBlock?.network, expectedNetwork: input.expectedNetwork })
   }
-  if (transaction.networkId !== input.rpcNetworkId) {
+  if (input.rpcNetworkId !== undefined && transaction.networkId !== input.rpcNetworkId) {
     return { kind: 'invalid', code: 'transaction_invalid_network', reason: 'The transaction belongs to a different Nimiq network.' }
   }
-  if (normalizeAddress(transaction.recipientAddress) !== normalizeAddress(input.expectedRecipient)) {
+  const checks = transactionChecks(input)
+  if (!checks.recipientMatches) {
     return { kind: 'invalid', code: 'transaction_invalid_recipient', reason: 'The recipient does not match this Tab.' }
   }
-  if (transaction.senderType === 0 && normalizeAddress(transaction.senderAddress) !== normalizeAddress(input.expectedSender)) {
+  if (transaction.senderType === 0 && !checks.senderMatches) {
     return { kind: 'invalid', code: 'transaction_invalid_sender', reason: 'The basic transaction sender does not match the claimed wallet.' }
   }
-  if (transaction.valueMinor !== BigInt(input.expectedAmountMinor).toString()) {
+  if (!checks.amountMatches) {
     return { kind: 'invalid', code: 'transaction_invalid_amount', reason: 'The transaction amount does not match this participant share.' }
   }
-  if (transaction.recipientData !== input.expectedReference) {
+  if (!checks.referenceMatches) {
     return { kind: 'invalid', code: 'transaction_invalid_reference', reason: 'The payment reference does not match this Tab slot.' }
   }
-  if (transaction.executionResult !== true) {
+  if (!checks.executionResult) {
     return { kind: 'invalid', code: 'transaction_execution_failed', reason: 'The transaction was not successfully executed onchain.' }
   }
   if (input.macroBlockAfterTransaction === null || !evaluateMacroBlockFinality({
@@ -605,14 +650,14 @@ async function getLatestBlock(context: RpcCallContext, call: RpcCaller = rpcCall
   return normalizeRpcLatestBlock(await call<unknown>('getLatestBlock', [false], context))
 }
 
-async function findTransaction(hash: string, context: RpcCallContext): Promise<{ transaction: VerifiedRpcTransaction | null; inMempool: boolean }> {
+async function findTransaction(hash: string, context: RpcCallContext, call: RpcCaller = rpcCall): Promise<{ transaction: VerifiedRpcTransaction | null; inMempool: boolean }> {
   try {
-    const raw = await rpcCall<RawRpcTransaction | null>('getTransactionByHash', [hash], context)
+    const raw = await call<RawRpcTransaction | null>('getTransactionByHash', [hash], context)
     return { transaction: raw ? normalizeRpcTransaction(raw) : null, inMempool: false }
   } catch (error) {
     if (!(error instanceof RpcNotFoundError)) throw error
     try {
-      const raw = await rpcCall<RawRpcTransaction | null>('getTransactionFromMempool', [hash], context)
+      const raw = await call<RawRpcTransaction | null>('getTransactionFromMempool', [hash], context)
       return { transaction: raw ? normalizeRpcTransaction(raw, { allowPending: true }) : null, inMempool: true }
     } catch (mempoolError) {
       if (mempoolError instanceof RpcNotFoundError) return { transaction: null, inMempool: false }
@@ -621,58 +666,166 @@ async function findTransaction(hash: string, context: RpcCallContext): Promise<{
   }
 }
 
+function emptyVerificationTrace(): NimiqVerificationTrace {
+  return {
+    configuredNetwork: env.NIMIQ_NETWORK?.trim().toLowerCase() ?? 'unconfigured',
+    observedNetwork: null,
+    transactionFound: false,
+    transaction: null,
+    macroBlockAfter: null,
+    latestBlock: null,
+    checks: null,
+  }
+}
+
+function storedOutcomeFromEvaluation(
+  outcome: VerificationOutcome,
+  context: StoredNimiqPaymentContext,
+  trace: NimiqVerificationTrace,
+): StoredNimiqVerificationResult {
+  if (outcome.kind === 'confirmed') {
+    return { kind: 'confirmed', txHash: context.payment.txHash, confirmedAt: Date.now(), trace }
+  }
+  if (outcome.kind === 'invalid') return { kind: 'invalid', code: outcome.code ?? 'transaction_invalid', reason: outcome.reason, trace }
+  if (outcome.kind === 'confirming') return { kind: 'confirming', code: outcome.code ?? 'verification_confirming', reason: outcome.reason, trace }
+  return { kind: 'retryable_error', code: outcome.code, reason: outcome.reason, trace }
+}
+
+function storedOutcomeFromError(error: unknown, trace: NimiqVerificationTrace, paymentId: string): StoredNimiqVerificationResult {
+  if (error instanceof RpcResponseInvalidError) {
+    return {
+      kind: 'retryable_error',
+      code: error.code,
+      reason: 'Nimiq verification returned an invalid response. Retry verification.',
+      diagnostic: error.diagnosticMessage,
+      trace,
+    }
+  }
+  if (error instanceof RpcTemporaryError) {
+    return {
+      kind: 'confirming',
+      code: error.code,
+      reason: 'Nimiq verification is temporarily unavailable; retrying.',
+      diagnostic: error.diagnosticMessage,
+      trace,
+    }
+  }
+  if (error instanceof RpcNotFoundError) {
+    return {
+      kind: 'confirming',
+      code: error.code,
+      reason: 'Transaction submitted; waiting for it to appear onchain.',
+      diagnostic: error.diagnosticMessage,
+      trace,
+    }
+  }
+  if (error instanceof RpcPermanentError) {
+    return {
+      kind: 'retryable_error',
+      code: error.code,
+      reason: 'Nimiq verification failed. Retry verification.',
+      diagnostic: error.diagnosticMessage,
+      trace,
+    }
+  }
+  const diagnostic = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : 'Unexpected verification error.'
+  if (/NIMIQ_RPC_URL|NIMIQ_NETWORK|endpoint is not configured/i.test(diagnostic)) {
+    return {
+      kind: 'retryable_error',
+      code: 'verification_not_configured',
+      reason: 'Onchain verification is not configured for this deployment.',
+      diagnostic,
+      trace,
+    }
+  }
+  console.error('[NIM verification internal error]', { paymentId, errorClass: error instanceof Error ? error.name : 'unknown', message: diagnostic })
+  return {
+    kind: 'retryable_error',
+    code: 'internal_verification_error',
+    reason: 'Nimiq verification failed unexpectedly. Retry verification.',
+    diagnostic,
+    trace,
+  }
+}
+
+export async function verifyStoredNimiqPayment(
+  context: StoredNimiqPaymentContext,
+  call: RpcCaller = rpcCall,
+  rpcContext: RpcCallContext = { paymentId: String(context.payment.txHash), observations: [] },
+): Promise<StoredNimiqVerificationResult> {
+  const trace = emptyVerificationTrace()
+  try {
+    const expectedNetwork = configuredNetwork()
+    trace.configuredNetwork = expectedNetwork
+    const networkBlock = await getLatestBlock(rpcContext, call)
+    trace.observedNetwork = networkBlock.network
+    const networkOutcome = evaluateRpcNetwork({ actualNetwork: networkBlock.network, expectedNetwork })
+    if (networkOutcome.kind === 'failed') {
+      console.warn('Nimiq RPC network mismatch or unidentified network', {
+        expected: expectedRpcNetwork(expectedNetwork),
+        actual: typeof networkBlock.network === 'string' ? networkBlock.network : 'unknown',
+      })
+      return storedOutcomeFromEvaluation(networkOutcome, context, trace)
+    }
+
+    const found = await findTransaction(context.payment.txHash, rpcContext, call)
+    trace.transactionFound = Boolean(found.transaction)
+    trace.transaction = found.transaction
+    const lookupOutcome = evaluateTransactionLookup({ transactionFound: Boolean(found.transaction), inMempool: found.inMempool })
+    if (lookupOutcome) return storedOutcomeFromEvaluation(lookupOutcome, context, trace)
+
+    const transaction = found.transaction
+    if (!transaction) throw new RpcResponseInvalidError('Nimiq RPC returned no transaction.')
+    const macroBlockAfterTransaction = transaction.blockNumber === null
+      ? null
+      : await getMacroBlockAfter(transaction.blockNumber, rpcContext, call)
+    trace.macroBlockAfter = macroBlockAfterTransaction
+    const finalLatestBlock = await getLatestBlock(rpcContext, call)
+    trace.latestBlock = finalLatestBlock
+    trace.checks = transactionChecks({
+      transaction,
+      expectedSender: context.payment.senderAddress,
+      expectedRecipient: context.tab.recipientAddress,
+      expectedAmountMinor: context.slot.amountMinor,
+      expectedReference: getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId),
+    })
+    const outcome = evaluateNimiqTransaction({
+      transaction,
+      macroBlockAfterTransaction,
+      latestBlock: finalLatestBlock,
+      expectedNetwork,
+      expectedSender: context.payment.senderAddress,
+      expectedRecipient: context.tab.recipientAddress,
+      expectedAmountMinor: context.slot.amountMinor,
+      expectedReference: getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId),
+    })
+    return storedOutcomeFromEvaluation(outcome, context, trace)
+  } catch (error) {
+    return storedOutcomeFromError(error, trace, rpcContext.paymentId)
+  }
+}
+
 export async function collectNimiqPaymentDiagnostics(
-  context: StoredPaymentDiagnosticContext,
+  context: StoredNimiqPaymentContext,
   call: RpcCaller,
   rpcContext: RpcCallContext,
 ): Promise<NimiqPaymentDiagnostic> {
-  const configured = env.NIMIQ_NETWORK?.trim().toLowerCase() ?? 'unconfigured'
-  const expectedNetwork = configured === 'testnet' || configured === 'mainnet' ? configured : null
-  const expectedReference = expectedNetwork
-    ? getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId)
-    : null
-  const read = async <T>(operation: () => Promise<T>): Promise<{ value: T | null; error: unknown | null }> => {
-    try {
-      return { value: await operation(), error: null }
-    } catch (error) {
-      return { value: null, error }
-    }
-  }
-
-  const network = await read(() => getLatestBlock(rpcContext, call))
-  const transactionResult = await read(() => call<RawRpcTransaction | null>('getTransactionByHash', [context.payment.txHash], rpcContext))
-  let transaction: VerifiedRpcTransaction | null = null
-  if (transactionResult.value) {
-    try {
-      transaction = normalizeRpcTransaction(transactionResult.value)
-    } catch {
-      // The RPC observation retains the response shape; diagnostics never return a raw payload.
-    }
-  }
-
-  const macro = transaction?.blockNumber === null || transaction?.blockNumber === undefined
-    ? { value: null, error: null }
-    : await read(() => getMacroBlockAfter(transaction.blockNumber as number, rpcContext, call))
-  const finalNetwork = await read(() => getLatestBlock(rpcContext, call))
-  const observedNetwork = network.value?.network ?? finalNetwork.value?.network ?? null
-  const latestBlock = finalNetwork.value?.number ?? null
-  const macroBlockAfter = macro.value
-
+  const result = await verifyStoredNimiqPayment(context, call, rpcContext)
+  const trace = result.trace
+  const checks = trace.checks
   return {
-    configuredNetwork: configured,
-    observedNetwork,
-    transactionFound: transactionResult.value !== null && transactionResult.value !== undefined,
-    transactionBlock: transaction?.blockNumber ?? null,
-    macroBlockAfter,
-    latestBlock,
-    finalized: macroBlockAfter !== null && latestBlock !== null && evaluateMacroBlockFinality({ latestBlockNumber: latestBlock, macroBlockAfterTransaction: macroBlockAfter }),
-    executionResult: transaction?.executionResult ?? null,
-    recipientMatches: transaction && normalizeAddress(context.tab.recipientAddress) !== null
-      ? normalizeAddress(transaction.recipientAddress) === normalizeAddress(context.tab.recipientAddress)
-      : null,
-    amountMatches: transaction ? transaction.valueMinor === context.slot.amountMinor : null,
-    referenceMatches: transaction && expectedReference ? transaction.recipientData === expectedReference : null,
-    senderType: transaction?.senderType ?? null,
+    configuredNetwork: trace.configuredNetwork,
+    observedNetwork: trace.observedNetwork ?? trace.latestBlock?.network ?? null,
+    transactionFound: trace.transactionFound,
+    transactionBlock: trace.transaction?.blockNumber ?? null,
+    macroBlockAfter: trace.macroBlockAfter,
+    latestBlock: trace.latestBlock?.number ?? null,
+    finalized: trace.macroBlockAfter !== null && trace.latestBlock !== null && evaluateMacroBlockFinality({ latestBlockNumber: trace.latestBlock.number, macroBlockAfterTransaction: trace.macroBlockAfter }),
+    executionResult: trace.transaction?.executionResult ?? null,
+    recipientMatches: checks?.recipientMatches ?? null,
+    amountMatches: checks?.amountMatches ?? null,
+    referenceMatches: checks?.referenceMatches ?? null,
+    senderType: trace.transaction?.senderType ?? null,
     rpcStatuses: rpcContext.observations?.map(diagnosticObservation) ?? [],
   }
 }
@@ -701,89 +854,16 @@ export const verifyNimiqTransaction = internalAction({
     if (!context || context.payment.status === 'confirmed' || context.payment.status === 'invalid') return null
 
     const rpcContext: RpcCallContext = { paymentId: String(args.paymentId), observations: [] }
-    let outcome: VerificationOutcome
-    try {
-      const expectedNetwork = configuredNetwork()
-      const networkBlock = await getLatestBlock(rpcContext)
-      const networkOutcome = evaluateRpcNetwork({ actualNetwork: networkBlock.network, expectedNetwork })
-      if (networkOutcome.kind === 'failed') {
-        console.warn('Nimiq RPC network mismatch or unidentified network', {
-          expected: expectedRpcNetwork(expectedNetwork),
-          actual: typeof networkBlock.network === 'string' ? networkBlock.network : 'unknown',
-        })
-        outcome = networkOutcome
-      } else {
-        const found = await findTransaction(context.payment.txHash, rpcContext)
-        const lookupOutcome = evaluateTransactionLookup({ transactionFound: Boolean(found.transaction), inMempool: found.inMempool })
-        if (lookupOutcome) {
-          outcome = lookupOutcome
-        } else {
-          const transaction = found.transaction
-          if (!transaction) throw new RpcTemporaryError('Nimiq RPC returned no transaction.', 'rpc_unavailable')
-          const [macroBlockAfterTransaction, rpcNetworkId] = await Promise.all([
-            transaction.blockNumber === null ? Promise.resolve(null) : getMacroBlockAfter(transaction.blockNumber, rpcContext),
-            rpcCall<unknown>('getNetworkId', [], rpcContext).then((value) => requiredInteger(value, 'networkId')),
-          ])
-          const finalLatestBlock = await getLatestBlock(rpcContext)
-          outcome = evaluateNimiqTransaction({
-            transaction,
-            macroBlockAfterTransaction,
-            latestBlock: finalLatestBlock,
-            rpcNetworkId,
-            expectedNetwork,
-            expectedSender: context.payment.senderAddress,
-            expectedRecipient: context.tab.recipientAddress,
-            expectedAmountMinor: context.slot.amountMinor,
-            expectedReference: getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId),
-          })
-        }
-      }
-    } catch (error) {
-      if (error instanceof RpcResponseInvalidError) {
-        outcome = {
-          kind: 'failed',
-          code: error.code,
-          reason: 'Nimiq verification returned an invalid response. Retry verification.',
-          diagnostic: error.diagnosticMessage,
-        }
-      } else if (error instanceof RpcTemporaryError) {
-        outcome = {
-          kind: 'confirming',
-          code: error.code,
-          reason: 'Nimiq verification is temporarily unavailable; retrying.',
-          diagnostic: error.diagnosticMessage,
-        }
-      } else if (error instanceof RpcNotFoundError) {
-        outcome = {
-          kind: 'confirming',
-          code: error.code,
-          reason: 'Transaction submitted; waiting for it to appear onchain.',
-          diagnostic: error.diagnosticMessage,
-        }
-      } else if (error instanceof RpcPermanentError) {
-        outcome = {
-          kind: 'failed',
-          code: error.code,
-          reason: 'Nimiq verification failed. Retry verification.',
-          diagnostic: error.diagnosticMessage,
-        }
-      } else {
-        const diagnostic = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : 'Unexpected verification error.'
-        outcome = /NIMIQ_RPC_URL|NIMIQ_NETWORK|endpoint is not configured/i.test(diagnostic)
-          ? { kind: 'failed', code: 'verification_not_configured', reason: 'Onchain verification is not configured for this deployment.' }
-          : { kind: 'failed', code: 'rpc_response_invalid', reason: 'Nimiq verification failed. Retry verification.', diagnostic }
-      }
-    }
-
+    const result = await verifyStoredNimiqPayment(context, rpcCall, rpcContext)
     const resultArgs = {
       paymentId: args.paymentId,
-      kind: outcome.kind,
-      reason: 'reason' in outcome && outcome.reason ? outcome.reason : 'Nimiq transaction verified and finalized.',
+      kind: result.kind === 'retryable_error' ? 'failed' : result.kind,
+      reason: result.kind === 'confirmed' ? 'Nimiq transaction verified and finalized.' : result.reason,
     } as const
     await ctx.runMutation(internal.verification.applyVerificationResult, {
       ...resultArgs,
-      ...(outcome.code ? { code: outcome.code } : {}),
-      ...(outcome.diagnostic ? { diagnostic: outcome.diagnostic } : {}),
+      ...('code' in result && result.code ? { code: result.code } : {}),
+      ...('diagnostic' in result && result.diagnostic ? { diagnostic: result.diagnostic } : {}),
     })
     return null
   },
@@ -828,7 +908,7 @@ export const applyVerificationResult = internalMutation({
 
     if (args.kind === 'confirmed') {
       const now = Date.now()
-      await ctx.db.patch('payments', payment._id, { status: 'confirmed', verificationReason: args.reason, confirmedAt: now, verificationAttempts: attempts, verificationScheduledAt: 0 })
+      await ctx.db.patch('payments', payment._id, { status: 'confirmed', verificationCode: 'verified', verificationReason: args.reason, confirmedAt: now, verificationAttempts: attempts, verificationScheduledAt: 0 })
       await ctx.db.patch('participantSlots', slot._id, { status: 'paid', paymentId: payment._id, updatedAt: now })
       await recomputeTabStatusForTab(ctx, tab._id)
       return null

@@ -144,7 +144,6 @@ export const retryVerification = mutation({
     const scheduledAt = Date.now() + 1
     await ctx.db.patch('payments', payment._id, {
       status: 'submitted',
-      verificationAttempts: 0,
       verificationCode: 'verification_retry_requested',
       verificationReason: 'Payment submitted. Verification needs to be retried.',
       verificationScheduledAt: scheduledAt,
