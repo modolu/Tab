@@ -22,10 +22,18 @@ const submittedPaymentResult = v.object({
   slotStatus,
 })
 
+const retryVerificationResult = v.object({
+  paymentId: v.id('payments'),
+  txHash: v.string(),
+  status: paymentStatus,
+  slotStatus,
+})
+
 const paymentStatusResult = v.union(v.object({
   paymentId: v.id('payments'),
   txHash: v.string(),
   status: paymentStatus,
+  verificationCode: v.optional(v.string()),
   verificationReason: v.optional(v.string()),
   slotStatus,
   createdAt: v.number(),
@@ -86,9 +94,7 @@ export const recordSubmittedPayment = mutation({
       const existingPayment = await ctx.db.get(slot.paymentId)
       if (existingPayment) {
         if (existingPayment.txHash === txHash) return resultFromPayment(existingPayment, slot.status)
-        if (existingPayment.status !== 'invalid' && existingPayment.status !== 'failed') {
-          throw new Error('This participant slot already has a payment in verification.')
-        }
+        if (existingPayment.status !== 'invalid') throw new Error('This participant slot already has a submitted payment. Retry its verification instead.')
       }
     }
     if (slot.status === 'paid') throw new Error('This participant slot is already paid.')
@@ -106,11 +112,51 @@ export const recordSubmittedPayment = mutation({
       status: 'submitted',
       verificationAttempts: 0,
       createdAt: now,
+      verificationScheduledAt: now + 1,
     })
     await ctx.db.patch('participantSlots', slot._id, { status: 'pending', paymentId, updatedAt: now })
-    await ctx.scheduler.runAfter(0, internal.verification.verifyNimiqTransaction, { paymentId })
+    await ctx.scheduler.runAfter(0, internal.verification.verifyNimiqTransaction, { paymentId, scheduledAt: now + 1 })
 
     return { paymentId, txHash, status: 'submitted' as const, slotStatus: 'pending' as const }
+  },
+})
+
+export const retryVerification = mutation({
+  args: { slug: v.optional(v.string()), slotId: v.id('participantSlots') },
+  returns: retryVerificationResult,
+  handler: async (ctx, args) => {
+    const slot = await ctx.db.get(args.slotId)
+    const tab = args.slug
+      ? await ctx.db.query('tabs').withIndex('by_slug', (q) => q.eq('slug', args.slug as string)).first()
+      : slot ? await ctx.db.get(slot.tabId) : null
+    if (!tab) throw new Error('Tab not found.')
+    if (!slot || slot.tabId !== tab._id || !slot.paymentId) throw new Error('This participant slot has no submitted payment to retry.')
+
+    const payment = await ctx.db.get(slot.paymentId)
+    if (!payment || payment.tabId !== tab._id || payment.participantSlotId !== slot._id) {
+      throw new Error('This participant slot has no valid submitted payment to retry.')
+    }
+    if (payment.status === 'confirmed' || slot.status === 'paid') return resultFromPayment(payment, slot.status)
+    if (payment.status === 'invalid') throw new Error('This payment was permanently invalid and cannot be retried.')
+    if ((payment.verificationScheduledAt ?? 0) > 0) return resultFromPayment(payment, slot.status)
+    if (payment.status !== 'failed') throw new Error('This payment is already being verified.')
+
+    const scheduledAt = Date.now() + 1
+    await ctx.db.patch('payments', payment._id, {
+      status: 'submitted',
+      verificationAttempts: 0,
+      verificationCode: 'verification_retry_requested',
+      verificationReason: 'Payment submitted. Verification needs to be retried.',
+      verificationScheduledAt: scheduledAt,
+    })
+    await ctx.db.patch('participantSlots', slot._id, { status: 'pending', updatedAt: Date.now() })
+    await ctx.scheduler.runAfter(0, internal.verification.verifyNimiqTransaction, { paymentId: payment._id, scheduledAt })
+    return {
+      paymentId: payment._id,
+      txHash: payment.txHash,
+      status: 'submitted' as const,
+      slotStatus: 'pending' as const,
+    }
   },
 })
 
@@ -130,6 +176,7 @@ export const getPaymentStatus = query({
       paymentId: payment._id,
       txHash: payment.txHash,
       status: payment.status,
+      verificationCode: payment.verificationCode,
       verificationReason: payment.verificationReason,
       slotStatus: slot.status,
       createdAt: payment.createdAt,
@@ -145,6 +192,7 @@ export const getVerificationContext = internalQuery({
       _id: v.id('payments'), _creationTime: v.number(), tabId: v.id('tabs'), participantSlotId: v.id('participantSlots'),
       chain: v.literal('nimiq'), token: v.literal('NIM'), senderAddress: v.string(), recipientAddress: v.string(),
       amountMinor: v.string(), txHash: v.string(), status: paymentStatus, verificationAttempts: v.optional(v.number()),
+      verificationCode: v.optional(v.string()), verificationScheduledAt: v.optional(v.number()),
       verificationReason: v.optional(v.string()), createdAt: v.number(), confirmedAt: v.optional(v.number()),
     }),
     tab: v.object({ _id: v.id('tabs'), slug: v.string(), recipientAddress: v.string(), status: v.union(v.literal('open'), v.literal('settled'), v.literal('expired'), v.literal('cancelled')) }),
@@ -161,6 +209,7 @@ export const getVerificationContext = internalQuery({
         _id: payment._id, _creationTime: payment._creationTime, tabId: payment.tabId, participantSlotId: payment.participantSlotId,
         chain: payment.chain, token: payment.token, senderAddress: payment.senderAddress, recipientAddress: payment.recipientAddress,
         amountMinor: payment.amountMinor, txHash: payment.txHash, status: payment.status, verificationAttempts: payment.verificationAttempts,
+        verificationCode: payment.verificationCode, verificationScheduledAt: payment.verificationScheduledAt,
         verificationReason: payment.verificationReason, createdAt: payment.createdAt, confirmedAt: payment.confirmedAt,
       },
       tab: { _id: tab._id, slug: tab.slug, recipientAddress: tab.recipientAddress, status: tab.status },

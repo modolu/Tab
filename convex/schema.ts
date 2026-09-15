@@ -38,6 +38,8 @@ export default defineSchema({
     amountMinor: v.string(),
     txHash: v.string(),
     verificationAttempts: v.optional(v.number()),
+    verificationCode: v.optional(v.string()),
+    verificationScheduledAt: v.optional(v.number()),
     status: v.union(v.literal('submitted'), v.literal('confirming'), v.literal('confirmed'), v.literal('failed'), v.literal('invalid')),
     verificationReason: v.optional(v.string()),
     createdAt: v.number(),

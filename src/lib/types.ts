@@ -70,6 +70,7 @@ export type PaymentStatus = {
   paymentId: string
   txHash: string
   status: 'submitted' | 'confirming' | 'confirmed' | 'failed' | 'invalid'
+  verificationCode?: string
   verificationReason?: string
   slotStatus: 'unpaid' | 'pending' | 'paid'
   createdAt: number

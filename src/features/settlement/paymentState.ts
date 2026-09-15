@@ -1,4 +1,10 @@
+import type { PaymentStatus } from '../../lib/types'
+
 export type SettlementState = 'unpaid' | 'submitting' | 'submitted' | 'confirming' | 'confirmed' | 'failed' | 'invalid'
+
+export function canShowPaymentAction(slotStatus: 'unpaid' | 'pending' | 'paid', paymentStatus: Pick<PaymentStatus, 'status'> | null | undefined): boolean {
+  return slotStatus === 'unpaid' && paymentStatus !== undefined && paymentStatus?.status !== 'failed'
+}
 
 export function settlementMessage(state: SettlementState): string {
   switch (state) {
@@ -7,7 +13,7 @@ export function settlementMessage(state: SettlementState): string {
     case 'submitted':
     case 'confirming': return 'Payment submitted — verifying onchain…'
     case 'confirmed': return 'Paid ✓'
-    case 'failed': return 'Payment failed'
+    case 'failed': return 'Payment submitted — verification needs to be retried.'
     case 'invalid': return 'Invalid payment'
   }
 }

@@ -35,8 +35,8 @@ export default function PaymentResultPage() {
     <div className="page state-page payment-result-page">
       <div className={`result-icon ${isConfirmed ? 'is-success' : isInvalid || isFailed ? 'is-error' : ''}`} aria-hidden="true">{isConfirmed ? '✓' : isInvalid || isFailed ? '!' : '…'}</div>
       <p className="eyebrow">{tab.title}</p>
-      <h2>{isConfirmed ? 'Payment verified' : isInvalid ? 'Payment could not be verified' : isFailed ? 'Verification timed out' : 'Payment submitted'}</h2>
-      <p>{isConfirmed ? `${participant?.label ?? 'Your'} share is paid.` : isInvalid || isFailed ? (status?.verificationReason ?? 'The slot is available to retry from the Tab.') : recording ? 'Saving your transaction securely…' : 'Verifying onchain… Do not submit another payment for this slot.'}</p>
+      <h2>{isConfirmed ? 'Payment verified' : isInvalid ? 'Payment could not be verified' : isFailed ? 'Verification needs a retry' : 'Payment submitted'}</h2>
+      <p>{isConfirmed ? `${participant?.label ?? 'Your'} share is paid.` : isInvalid ? (status?.verificationReason ?? 'This transaction did not match the assigned payment.') : isFailed ? 'Payment submitted. Verification needs to be retried from the Tab. Do not send another payment.' : recording ? 'Saving your transaction securely…' : 'Verifying onchain… Do not submit another payment for this slot.'}</p>
       {recordError && <div className="result-recovery" role="alert"><strong>Transaction hash captured</strong><p>{recordError}</p><button className="button button-secondary" type="button" onClick={() => window.location.reload()}>Retry recording</button></div>}
       {txHash && <p className="tx-hash">Transaction: {txHash.slice(0, 10)}…{txHash.slice(-8)}</p>}
       <Link className="button button-primary" to={`/t/${encodeURIComponent(slug)}`}>{isConfirmed ? 'Back to Tab' : 'View Tab status'}</Link>

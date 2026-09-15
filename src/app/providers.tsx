@@ -10,6 +10,7 @@ export type TabBackend = {
   getOrganizerTab: (slug: string, ownerSecret?: string) => Promise<PublicTab | null>
   claimParticipantSlot: (slug: string, slotId: string, walletAddress: string) => Promise<SlotClaimResult>
   recordSubmittedPayment: (input: { slug: string; slotId: string; senderAddress: string; txHash: string }) => Promise<SubmittedPaymentResult>
+  retryVerification: (slug: string, slotId: string) => Promise<SubmittedPaymentResult>
   getPaymentStatus: (slug: string, slotId: string) => Promise<PaymentStatus | null>
 }
 
@@ -43,6 +44,7 @@ export function createConvexBackend(client: ConvexReactClient): TabBackend {
     ),
     claimParticipantSlot: (slug, slotId, walletAddress) => client.mutation(anyApi.participants.claimParticipantSlot, { slug, slotId, walletAddress }),
     recordSubmittedPayment: (input) => client.mutation(anyApi.payments.recordSubmittedPayment, input),
+    retryVerification: (slug, slotId) => client.mutation(anyApi.payments.retryVerification, { slug, slotId }),
     getPaymentStatus: (slug, slotId) => client.query(anyApi.payments.getPaymentStatus, { slug, slotId }),
   }
 }

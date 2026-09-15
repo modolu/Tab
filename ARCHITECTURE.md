@@ -802,7 +802,7 @@ CONFIRMING
   │
   ├── invalid ──────────→ INVALID
   │
-  ├── failed ───────────→ FAILED
+  ├── failed ───────────→ FAILED (slot remains PENDING; retry existing tx)
   │
   ▼
 CONFIRMED
@@ -952,6 +952,10 @@ Client may provide an idempotency key.
 ## Record payment
 
 Unique constraint by transaction hash.
+
+## Retry verification
+
+The public retry action only reschedules verification for the existing Payment and transaction hash. It cannot provide transaction details or mark a payment confirmed. A failed verification keeps its participant slot pending so the participant is never prompted to pay twice.
 
 ## Verify payment
 

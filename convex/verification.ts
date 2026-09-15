@@ -22,10 +22,10 @@ type RpcTransaction = {
 type RpcBlock = { number?: unknown; batch?: unknown; type?: unknown; network?: unknown }
 
 export type VerificationOutcome =
-  | { kind: 'confirmed' }
-  | { kind: 'invalid'; reason: string }
-  | { kind: 'confirming'; reason: string }
-  | { kind: 'failed'; reason: string }
+  | { kind: 'confirmed'; reason?: string; code?: string }
+  | { kind: 'invalid'; reason: string; code?: string }
+  | { kind: 'confirming'; reason: string; code?: string }
+  | { kind: 'failed'; reason: string; code: string }
 
 function normalizeAddress(value: unknown): string | null {
   if (typeof value !== 'string' || !ValidationUtils.isValidAddress(value)) return null
@@ -38,12 +38,36 @@ function integerValue(value: unknown): bigint | null {
   return null
 }
 
-function networkMatches(value: unknown, expected: 'testnet' | 'mainnet'): boolean {
+export function expectedRpcNetwork(network: 'testnet' | 'mainnet'): 'TestAlbatross' | 'MainAlbatross' {
+  return network === 'testnet' ? 'TestAlbatross' : 'MainAlbatross'
+}
+
+export function networkMatches(value: unknown, expected: 'testnet' | 'mainnet'): boolean {
   if (typeof value !== 'string') return false
   const normalized = value.toLowerCase().replace(/[^a-z]/g, '')
-  return expected === 'testnet'
-    ? ['test', 'testnet', 'testalbatross'].includes(normalized)
-    : ['main', 'mainnet', 'mainalbatross'].includes(normalized)
+  return normalized === expectedRpcNetwork(expected).toLowerCase()
+}
+
+export function evaluateRpcNetwork(input: { actualNetwork: unknown; expectedNetwork: 'testnet' | 'mainnet' }): VerificationOutcome {
+  if (networkMatches(input.actualNetwork, input.expectedNetwork)) return { kind: 'confirmed' }
+  if (typeof input.actualNetwork === 'string' && input.actualNetwork.trim()) {
+    return {
+      kind: 'failed',
+      code: 'rpc_network_mismatch',
+      reason: `Nimiq RPC network mismatch: expected ${expectedRpcNetwork(input.expectedNetwork)}, received ${input.actualNetwork}.`,
+    }
+  }
+  return {
+    kind: 'failed',
+    code: 'rpc_network_unidentified',
+    reason: `Nimiq RPC did not identify the expected ${expectedRpcNetwork(input.expectedNetwork)} network.`,
+  }
+}
+
+export function evaluateTransactionLookup(input: { transactionFound: boolean; inMempool: boolean }): VerificationOutcome | null {
+  if (!input.transactionFound) return { kind: 'confirming', code: 'transaction_not_found', reason: 'Transaction submitted; waiting for it to appear onchain.' }
+  if (input.inMempool) return { kind: 'confirming', code: 'transaction_in_mempool', reason: 'Transaction is in the Nimiq mempool; waiting for inclusion.' }
+  return null
 }
 
 function hasReachedMacroFinality(transactionBlock: RpcBlock, latestBlock: RpcBlock): boolean {
@@ -67,34 +91,39 @@ export function evaluateNimiqTransaction(input: {
 }): VerificationOutcome {
   const { transaction } = input
   if (!input.latestBlock || !networkMatches(input.latestBlock.network, input.expectedNetwork)) {
-    return { kind: 'confirming', reason: 'The configured Nimiq endpoint is not ready on the expected network.' }
+    return evaluateRpcNetwork({ actualNetwork: input.latestBlock?.network, expectedNetwork: input.expectedNetwork })
   }
   if (String(transaction.networkId) !== String(input.rpcNetworkId)) {
-    return { kind: 'invalid', reason: 'The transaction belongs to a different Nimiq network.' }
+    return { kind: 'invalid', code: 'network_mismatch', reason: 'The transaction belongs to a different Nimiq network.' }
   }
   if (normalizeAddress(transaction.to) !== normalizeAddress(input.expectedRecipient)) {
-    return { kind: 'invalid', reason: 'The recipient does not match this Tab.' }
+    return { kind: 'invalid', code: 'recipient_mismatch', reason: 'The recipient does not match this Tab.' }
   }
   if (normalizeAddress(transaction.from) !== normalizeAddress(input.expectedSender)) {
-    return { kind: 'invalid', reason: 'The sender does not match the claimed wallet.' }
+    return { kind: 'invalid', code: 'sender_mismatch', reason: 'The sender does not match the claimed wallet.' }
   }
   if (integerValue(transaction.value) !== BigInt(input.expectedAmountMinor)) {
-    return { kind: 'invalid', reason: 'The transaction amount does not match this participant share.' }
+    return { kind: 'invalid', code: 'amount_mismatch', reason: 'The transaction amount does not match this participant share.' }
   }
   if (transaction.recipientData !== input.expectedReference) {
-    return { kind: 'invalid', reason: 'The payment reference does not match this Tab slot.' }
+    return { kind: 'invalid', code: 'reference_mismatch', reason: 'The payment reference does not match this Tab slot.' }
   }
   if (transaction.executionResult !== true) {
-    return { kind: 'invalid', reason: 'The transaction was not successfully executed onchain.' }
+    return { kind: 'invalid', code: 'execution_failed', reason: 'The transaction was not successfully executed onchain.' }
   }
   if (!input.transactionBlock || !hasReachedMacroFinality(input.transactionBlock, input.latestBlock)) {
-    return { kind: 'confirming', reason: 'Payment found onchain; waiting for Nimiq finality.' }
+    // Nimiq finality is reached after the next macro block closes the transaction's batch.
+    return { kind: 'confirming', code: 'transaction_not_finalized', reason: 'Payment found onchain; waiting for Nimiq finality.' }
   }
   return { kind: 'confirmed' }
 }
 
 class RpcNotFoundError extends Error {}
 class RpcTemporaryError extends Error {}
+
+export function isRetryableRpcStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500
+}
 
 function configuredNetwork(): 'testnet' | 'mainnet' {
   const value = env.NIMIQ_NETWORK?.trim().toLowerCase()
@@ -129,7 +158,10 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
   } catch {
     throw new RpcTemporaryError('The Nimiq RPC endpoint could not be reached.')
   }
-  if (!response.ok) throw new RpcTemporaryError(`Nimiq RPC returned HTTP ${response.status}.`)
+  if (!response.ok) {
+    if (isRetryableRpcStatus(response.status)) throw new RpcTemporaryError(`Nimiq RPC returned HTTP ${response.status}.`)
+    throw new RpcTemporaryError(`Nimiq RPC returned an unavailable HTTP endpoint (${response.status}).`)
+  }
   let body: { result?: { data?: T } | T; error?: { message?: string } }
   try { body = await response.json() as typeof body } catch { throw new RpcTemporaryError('Nimiq RPC returned invalid JSON.') }
   if (body.error) {
@@ -158,27 +190,39 @@ async function findTransaction(hash: string): Promise<{ transaction: RpcTransact
 }
 
 export const verifyNimiqTransaction = internalAction({
-  args: { paymentId: v.id('payments') },
+  args: { paymentId: v.id('payments'), scheduledAt: v.optional(v.number()) },
   returns: v.null(),
   handler: async (ctx, args) => {
+    const claimed = await ctx.runMutation(internal.verification.claimVerificationAttempt, args)
+    if (!claimed) return null
     const context = await ctx.runQuery(internal.payments.getVerificationContext, { paymentId: args.paymentId })
-    if (!context || context.payment.status === 'confirmed' || context.payment.status === 'invalid' || context.payment.status === 'failed') return null
+    if (!context || context.payment.status === 'confirmed' || context.payment.status === 'invalid') return null
 
     let outcome: VerificationOutcome
     try {
-      const found = await findTransaction(context.payment.txHash)
-      if (!found.transaction) {
-        outcome = { kind: 'confirming', reason: 'Transaction submitted; waiting for it to appear onchain.' }
-      } else if (found.inMempool) {
-        outcome = { kind: 'confirming', reason: 'Transaction is in the Nimiq mempool; waiting for inclusion.' }
+      const expectedNetwork = configuredNetwork()
+      const latestBlock = await rpcCall<RpcBlock>('getLatestBlock', [false])
+      const networkOutcome = evaluateRpcNetwork({ actualNetwork: latestBlock.network, expectedNetwork })
+      if (networkOutcome.kind === 'failed') {
+        console.warn('Nimiq RPC network mismatch or unidentified network', {
+          expected: expectedRpcNetwork(expectedNetwork),
+          actual: typeof latestBlock.network === 'string' ? latestBlock.network : 'unknown',
+        })
+        outcome = networkOutcome
       } else {
-        const [latestBlock, transactionBlock, rpcNetworkId] = await Promise.all([
-          rpcCall<RpcBlock>('getLatestBlock', [false]),
-          integerValue(found.transaction.blockNumber) === null ? Promise.resolve(null) : rpcCall<RpcBlock>('getBlockByNumber', [found.transaction.blockNumber, false]),
-          rpcCall<unknown>('getNetworkId', []),
-        ])
+        const found = await findTransaction(context.payment.txHash)
+        const lookupOutcome = evaluateTransactionLookup({ transactionFound: Boolean(found.transaction), inMempool: found.inMempool })
+        if (lookupOutcome) {
+          outcome = lookupOutcome
+        } else {
+          const transaction = found.transaction
+          if (!transaction) throw new RpcTemporaryError('Nimiq RPC returned no transaction.')
+          const [transactionBlock, rpcNetworkId] = await Promise.all([
+            integerValue(transaction.blockNumber) === null ? Promise.resolve(null) : rpcCall<RpcBlock>('getBlockByNumber', [transaction.blockNumber, false]),
+            rpcCall<unknown>('getNetworkId', []),
+          ])
         outcome = evaluateNimiqTransaction({
-          transaction: found.transaction,
+          transaction,
           transactionBlock,
           latestBlock,
           rpcNetworkId,
@@ -188,24 +232,43 @@ export const verifyNimiqTransaction = internalAction({
           expectedAmountMinor: context.slot.amountMinor,
           expectedReference: getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId),
         })
+        }
       }
     } catch (error) {
       if (!(error instanceof RpcTemporaryError) && !(error instanceof RpcNotFoundError)) {
         const reason = error instanceof Error ? error.message : 'Verification configuration is invalid.'
         outcome = /NIMIQ_RPC_URL|NIMIQ_NETWORK|endpoint is not configured/i.test(reason)
-          ? { kind: 'failed', reason: 'Onchain verification is not configured for this deployment.' }
-          : { kind: 'invalid', reason }
+          ? { kind: 'failed', code: 'verification_not_configured', reason: 'Onchain verification is not configured for this deployment.' }
+          : { kind: 'invalid', code: 'verification_error', reason }
       } else {
-        outcome = { kind: 'confirming', reason: 'Nimiq verification is temporarily unavailable; retrying.' }
+        outcome = { kind: 'confirming', code: 'rpc_temporary', reason: 'Nimiq verification is temporarily unavailable; retrying.' }
       }
     }
 
-    await ctx.runMutation(internal.verification.applyVerificationResult, {
+    const resultArgs = {
       paymentId: args.paymentId,
       kind: outcome.kind,
-      reason: 'reason' in outcome ? outcome.reason : 'Nimiq transaction verified and finalized.',
-    })
+      reason: 'reason' in outcome && outcome.reason ? outcome.reason : 'Nimiq transaction verified and finalized.',
+    } as const
+    if (outcome.code) {
+      await ctx.runMutation(internal.verification.applyVerificationResult, { ...resultArgs, code: outcome.code })
+    } else {
+      await ctx.runMutation(internal.verification.applyVerificationResult, resultArgs)
+    }
     return null
+  },
+})
+
+export const claimVerificationAttempt = internalMutation({
+  args: { paymentId: v.id('payments'), scheduledAt: v.optional(v.number()) },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const payment = await ctx.db.get(args.paymentId)
+    if (!payment || payment.status === 'confirmed' || payment.status === 'invalid') return false
+    if (args.scheduledAt !== undefined && payment.verificationScheduledAt !== args.scheduledAt) return false
+    if (args.scheduledAt === undefined && (payment.verificationScheduledAt ?? 0) > 0) return false
+    await ctx.db.patch('payments', payment._id, { verificationScheduledAt: 0 })
+    return true
   },
 })
 
@@ -213,12 +276,13 @@ export const applyVerificationResult = internalMutation({
   args: {
     paymentId: v.id('payments'),
     kind: v.union(v.literal('confirmed'), v.literal('invalid'), v.literal('confirming'), v.literal('failed')),
+    code: v.optional(v.string()),
     reason: v.string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     const payment = await ctx.db.get(args.paymentId)
-    if (!payment || payment.status === 'confirmed' || payment.status === 'invalid' || payment.status === 'failed') return null
+    if (!payment || payment.status === 'confirmed' || payment.status === 'invalid') return null
     const slot = await ctx.db.get(payment.participantSlotId)
     const tab = await ctx.db.get(payment.tabId)
     if (!slot || !tab) return null
@@ -227,29 +291,32 @@ export const applyVerificationResult = internalMutation({
 
     if (args.kind === 'confirmed') {
       const now = Date.now()
-      await ctx.db.patch('payments', payment._id, { status: 'confirmed', verificationReason: args.reason, confirmedAt: now, verificationAttempts: attempts })
+      await ctx.db.patch('payments', payment._id, { status: 'confirmed', verificationReason: args.reason, confirmedAt: now, verificationAttempts: attempts, verificationScheduledAt: 0 })
       await ctx.db.patch('participantSlots', slot._id, { status: 'paid', paymentId: payment._id, updatedAt: now })
       await recomputeTabStatusForTab(ctx, tab._id)
       return null
     }
     if (args.kind === 'invalid') {
-      await ctx.db.patch('payments', payment._id, { status: 'invalid', verificationReason: args.reason, verificationAttempts: attempts })
+      const codePatch = args.code ? { verificationCode: args.code } : {}
+      await ctx.db.patch('payments', payment._id, { status: 'invalid', ...codePatch, verificationReason: args.reason, verificationAttempts: attempts, verificationScheduledAt: 0 })
       await ctx.db.patch('participantSlots', slot._id, { status: 'unpaid', updatedAt: Date.now() })
       return null
     }
     if (args.kind === 'failed') {
-      await ctx.db.patch('payments', payment._id, { status: 'failed', verificationReason: args.reason, verificationAttempts: attempts })
-      await ctx.db.patch('participantSlots', slot._id, { status: 'unpaid', updatedAt: Date.now() })
+      await ctx.db.patch('payments', payment._id, { status: 'failed', verificationCode: args.code ?? 'verification_retry_required', verificationReason: args.reason, verificationAttempts: attempts, verificationScheduledAt: 0 })
+      await ctx.db.patch('participantSlots', slot._id, { status: 'pending', updatedAt: Date.now() })
       return null
     }
     if (attempts >= MAX_VERIFICATION_ATTEMPTS) {
-      await ctx.db.patch('payments', payment._id, { status: 'failed', verificationReason: 'Verification timed out before the transaction reached finality.', verificationAttempts: attempts })
-      await ctx.db.patch('participantSlots', slot._id, { status: 'unpaid', updatedAt: Date.now() })
+      await ctx.db.patch('payments', payment._id, { status: 'failed', verificationCode: 'verification_retry_required', verificationReason: 'Payment submitted. Verification needs to be retried.', verificationAttempts: attempts, verificationScheduledAt: 0 })
+      await ctx.db.patch('participantSlots', slot._id, { status: 'pending', updatedAt: Date.now() })
       return null
     }
-    await ctx.db.patch('payments', payment._id, { status: 'confirming', verificationReason: args.reason, verificationAttempts: attempts })
     const delay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)]
-    await ctx.scheduler.runAfter(delay, internal.verification.verifyNimiqTransaction, { paymentId: payment._id })
+    const scheduledAt = Date.now() + delay + 1
+    const codePatch = args.code ? { verificationCode: args.code } : {}
+    await ctx.db.patch('payments', payment._id, { status: 'confirming', ...codePatch, verificationReason: args.reason, verificationAttempts: attempts, verificationScheduledAt: scheduledAt })
+    await ctx.scheduler.runAfter(delay, internal.verification.verifyNimiqTransaction, { paymentId: payment._id, scheduledAt })
     return null
   },
 })

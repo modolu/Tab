@@ -77,5 +77,42 @@ describe('Phase 2 slot claiming and payment recording', () => {
     expect(tab?.participants[0].status).toBe('unpaid')
     const payment = await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId: first })
     expect(payment?.status).toBe('invalid')
+    await expect(t.mutation(anyApi.payments.retryVerification, { slug: created.slug, slotId: first })).rejects.toThrow(/permanently invalid/i)
+  })
+
+  it('keeps an exhausted verification pending and retries the same payment', async () => {
+    const t = convexTest(schema, modules)
+    const created = await create(t)
+    const slotId = created.participantSlotIds[0]
+    await t.mutation(anyApi.participants.claimParticipantSlot, { slug: created.slug, slotId, walletAddress: WALLET })
+    const submitted = await t.mutation(anyApi.payments.recordSubmittedPayment, { slug: created.slug, slotId, senderAddress: WALLET, txHash: tx('1') })
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await t.mutation(internal.verification.applyVerificationResult, {
+        paymentId: submitted.paymentId,
+        kind: 'confirming',
+        reason: 'Transaction is not yet finalized.',
+        code: 'transaction_not_finalized',
+      })
+    }
+
+    const exhausted = await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId })
+    expect(exhausted).toMatchObject({ status: 'failed', slotStatus: 'pending', verificationCode: 'verification_retry_required' })
+    expect((await t.query(anyApi.tabs.getTabBySlug, { slug: created.slug }))?.participants[0].status).toBe('pending')
+    await expect(t.mutation(anyApi.payments.recordSubmittedPayment, { slug: created.slug, slotId, senderAddress: WALLET, txHash: tx('2') })).rejects.toThrow(/submitted payment/i)
+
+    // Simulate the previous deployment, which left a failed payment's slot as unpaid.
+    await t.run(async (ctx) => ctx.db.patch('participantSlots', slotId, { status: 'unpaid' }))
+
+    const retry = await t.mutation(anyApi.payments.retryVerification, { slug: created.slug, slotId })
+    const repeatedRetry = await t.mutation(anyApi.payments.retryVerification, { slug: created.slug, slotId })
+    expect(retry).toMatchObject({ paymentId: submitted.paymentId, txHash: tx('1'), status: 'submitted', slotStatus: 'pending' })
+    expect(repeatedRetry).toEqual(retry)
+    expect((await t.run(async (ctx) => ctx.db.query('payments').withIndex('by_slot', (q) => q.eq('participantSlotId', slotId)).take(10))).length).toBe(1)
+
+    const stillUnconfirmed = await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId })
+    expect(stillUnconfirmed?.status).not.toBe('confirmed')
+    await t.mutation(internal.verification.applyVerificationResult, { paymentId: submitted.paymentId, kind: 'confirmed', reason: 'Existing transaction verified.' })
+    expect(await t.query(anyApi.payments.getPaymentStatus, { slug: created.slug, slotId })).toMatchObject({ status: 'confirmed', slotStatus: 'paid', txHash: tx('1') })
   })
 })
