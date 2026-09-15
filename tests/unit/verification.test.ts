@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import { canShowPaymentAction } from '../../src/features/settlement/paymentState'
-import { evaluateNimiqTransaction, evaluateRpcNetwork, evaluateTransactionLookup, isRetryableRpcStatus } from '../../convex/verification'
+import {
+  decodeRecipientDataHex,
+  evaluateNimiqTransaction,
+  evaluateRpcNetwork,
+  evaluateTransactionLookup,
+  isRetryableRpcStatus,
+  normalizeRpcTransaction,
+  parseRpcSuccess,
+  RpcResponseInvalidError,
+  type VerifiedRpcTransaction,
+} from '../../convex/verification'
+import { physicalNimiqTransactionResponse, physicalNimiqTransactionHash } from '../fixtures/nimiq-physical-transaction'
+
+const expectedTransaction: VerifiedRpcTransaction = {
+  hash: 'a'.repeat(64),
+  senderAddress: 'NQ2111111111111111111111111111111111',
+  senderType: 0,
+  recipientAddress: 'NQ2111111111111111111111111111111111',
+  recipientType: 0,
+  valueMinor: '1000000',
+  recipientDataHex: '5441423a303132333435363738396162636465663a7330',
+  recipientData: 'TAB:0123456789abcdef:s0',
+  blockNumber: 100,
+  confirmations: 10,
+  executionResult: true,
+  networkId: 7,
+}
 
 const expected = {
   expectedNetwork: 'testnet' as const,
@@ -9,12 +35,60 @@ const expected = {
   expectedAmountMinor: '1000000',
   expectedReference: 'TAB:0123456789abcdef:s0',
   rpcNetworkId: 7,
-  latestBlock: { number: 200, batch: 11, type: 'micro', network: 'TestAlbatross' },
-  transactionBlock: { number: 100, batch: 10, type: 'micro', network: 'TestAlbatross' },
-  transaction: { from: 'NQ2111111111111111111111111111111111', to: 'NQ2111111111111111111111111111111111', value: 1000000, recipientData: 'TAB:0123456789abcdef:s0', networkId: 7, executionResult: true, blockNumber: 100 },
+  latestBlock: { number: 200, batch: 11, type: 'micro' as const, network: 'TestAlbatross' },
+  transactionBlock: { number: 100, batch: 10, type: 'micro' as const, network: 'TestAlbatross' },
+  transaction: expectedTransaction,
 }
 
+describe('raw Nimiq JSON-RPC compatibility', () => {
+  it('unwraps the result.data JSON-RPC envelope and rejects a bare result object', () => {
+    expect(parseRpcSuccess<typeof physicalNimiqTransactionResponse.result.data>(physicalNimiqTransactionResponse)).toEqual(physicalNimiqTransactionResponse.result.data)
+    expect(() => parseRpcSuccess({ jsonrpc: '2.0', result: { network: 'TestAlbatross' }, id: 1 })).toThrow(RpcResponseInvalidError)
+  })
+
+  it('normalizes the physical transaction and decodes recipientData hex', () => {
+    const raw = parseRpcSuccess<typeof physicalNimiqTransactionResponse.result.data>(physicalNimiqTransactionResponse)
+    const normalized = normalizeRpcTransaction(raw)
+
+    expect(normalized).toMatchObject({
+      hash: physicalNimiqTransactionHash,
+      senderAddress: 'NQ38 E8U7 XHBR 22E4 2NTT MABV GPX2 YDYS H41A',
+      senderType: 2,
+      recipientAddress: 'NQ76 BYR0 G05A A71R U337 EQ3X 4EVE 97J8 3Q11',
+      recipientType: 0,
+      valueMinor: '100000',
+      recipientDataHex: '5441423a333330656336303366623531346535313a7330',
+      recipientData: 'TAB:330ec603fb514e51:s0',
+      blockNumber: 11512531,
+      confirmations: 10865,
+      networkId: 5,
+      executionResult: true,
+    })
+  })
+
+  it('rejects malformed hex and invalid UTF-8 recipient data', () => {
+    expect(() => decodeRecipientDataHex('abc')).toThrow(RpcResponseInvalidError)
+    expect(() => decodeRecipientDataHex('zz')).toThrow(RpcResponseInvalidError)
+    expect(() => decodeRecipientDataHex('c328')).toThrow(RpcResponseInvalidError)
+  })
+})
+
 describe('independent Nimiq transaction verification', () => {
+  it('accepts the real physical TestAlbatross transaction', () => {
+    const transaction = normalizeRpcTransaction(parseRpcSuccess(physicalNimiqTransactionResponse))
+    expect(evaluateNimiqTransaction({
+      transaction,
+      transactionBlock: { number: 11512531, batch: 141504, type: 'micro', network: 'TestAlbatross' },
+      latestBlock: { number: 11512590, batch: 141505, type: 'micro', network: 'TestAlbatross' },
+      rpcNetworkId: 5,
+      expectedNetwork: 'testnet',
+      expectedSender: 'NQ2111111111111111111111111111111111',
+      expectedRecipient: 'NQ76 BYR0 G05A A71R U337 EQ3X 4EVE 97J8 3Q11',
+      expectedAmountMinor: '100000',
+      expectedReference: 'TAB:330ec603fb514e51:s0',
+    })).toEqual({ kind: 'confirmed' })
+  })
+
   it.each([
     ['testnet', 'TestAlbatross'],
     ['mainnet', 'MainAlbatross'],
@@ -23,37 +97,42 @@ describe('independent Nimiq transaction verification', () => {
   })
 
   it('fails fast on a testnet/mainnet RPC mismatch without calling it an invalid payment', () => {
-    expect(evaluateRpcNetwork({ expectedNetwork: 'testnet', actualNetwork: 'MainAlbatross' })).toMatchObject({
-      kind: 'failed',
-      code: 'rpc_network_mismatch',
-    })
+    expect(evaluateRpcNetwork({ expectedNetwork: 'testnet', actualNetwork: 'MainAlbatross' })).toMatchObject({ kind: 'failed', code: 'rpc_network_mismatch' })
   })
 
-  it('confirms a valid finalized transaction', () => expect(evaluateNimiqTransaction(expected)).toEqual({ kind: 'confirmed' }))
   it.each([
-    ['recipient', { to: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000' }],
-    ['amount', { value: 2_000_000 }],
-    ['sender', { from: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000' }],
-    ['reference', { recipientData: 'TAB:wrong:s0' }],
-    ['network', { networkId: 8 }],
-  ])('rejects a transaction with the wrong %s', (_name, change) => {
-    const result = evaluateNimiqTransaction({ ...expected, transaction: { ...expected.transaction, ...change } })
-    expect(result.kind).toBe('invalid')
+    ['recipient', { recipientAddress: 'NQ07 0000 0000 0000 0000 0000 0000 0000 0000' }, 'transaction_invalid_recipient'],
+    ['amount', { valueMinor: '2000000' }, 'transaction_invalid_amount'],
+    ['reference', { recipientData: 'TAB:wrong:s0' }, 'transaction_invalid_reference'],
+    ['execution', { executionResult: false }, 'transaction_execution_failed'],
+  ] as const)('rejects a transaction with the wrong %s', (_name, change, code) => {
+    const result = evaluateNimiqTransaction({ ...expected, transaction: { ...expectedTransaction, ...change } })
+    expect(result).toMatchObject({ kind: 'invalid', code })
   })
-  it('keeps missing, mempool-like, and non-finalized transactions retryable', () => {
-    expect(evaluateTransactionLookup({ transactionFound: false, inMempool: false })).toMatchObject({ kind: 'confirming', code: 'transaction_not_found' })
+
+  it('enforces the selected sender for basic transactions but accepts non-basic sender types', () => {
+    expect(evaluateNimiqTransaction({
+      ...expected,
+      transaction: { ...expectedTransaction, senderAddress: 'NQ38 E8U7 XHBR 22E4 2NTT MABV GPX2 YDYS H41A', senderType: 0 },
+    })).toMatchObject({ kind: 'invalid', code: 'transaction_invalid_sender' })
+
+    expect(evaluateNimiqTransaction({
+      ...expected,
+      transaction: { ...expectedTransaction, senderAddress: 'NQ38 E8U7 XHBR 22E4 2NTT MABV GPX2 YDYS H41A', senderType: 2 },
+    })).toEqual({ kind: 'confirmed' })
+  })
+
+  it('keeps transaction lookup and finality behavior retryable when not ready', () => {
+    expect(evaluateTransactionLookup({ transactionFound: false, inMempool: false })).toMatchObject({ kind: 'confirming', code: 'rpc_transaction_not_found' })
     expect(evaluateTransactionLookup({ transactionFound: true, inMempool: true })).toMatchObject({ kind: 'confirming', code: 'transaction_in_mempool' })
-    expect(evaluateNimiqTransaction({ ...expected, transactionBlock: null }).kind).toBe('confirming')
-    expect(evaluateNimiqTransaction({ ...expected, latestBlock: { ...expected.latestBlock, batch: 10 } }).kind).toBe('confirming')
+    expect(evaluateNimiqTransaction({ ...expected, transactionBlock: null })).toMatchObject({ kind: 'confirming', code: 'transaction_not_finalized' })
+    expect(evaluateNimiqTransaction({ ...expected, latestBlock: { ...expected.latestBlock, batch: 10 } })).toMatchObject({ kind: 'confirming', code: 'transaction_not_finalized' })
   })
 
   it('treats rate limits and temporary server failures as retryable RPC errors', () => {
     expect(isRetryableRpcStatus(429)).toBe(true)
     expect(isRetryableRpcStatus(503)).toBe(true)
     expect(isRetryableRpcStatus(400)).toBe(false)
-  })
-  it('does not confirm a failed execution', () => {
-    expect(evaluateNimiqTransaction({ ...expected, transaction: { ...expected.transaction, executionResult: false } })).toMatchObject({ kind: 'invalid' })
   })
 
   it('does not show a normal Pay CTA for a failed verification with a submitted slot', () => {

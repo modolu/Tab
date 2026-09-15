@@ -9,17 +9,46 @@ import { v } from 'convex/values'
 const MAX_VERIFICATION_ATTEMPTS = 6
 const RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 40_000, 60_000]
 
-type RpcTransaction = {
-  from?: unknown
-  to?: unknown
-  value?: unknown
-  recipientData?: unknown
-  networkId?: unknown
-  executionResult?: unknown
-  blockNumber?: unknown
+type RpcRecord = Record<string, unknown>
+
+export type RpcSuccess<T> = {
+  jsonrpc: '2.0'
+  result: { data: T; metadata: unknown }
+  id: number | string
 }
 
-type RpcBlock = { number?: unknown; batch?: unknown; type?: unknown; network?: unknown }
+type RawRpcTransaction = {
+  hash: unknown
+  from: unknown
+  fromType: unknown
+  to: unknown
+  toType: unknown
+  value: unknown
+  senderData: unknown
+  recipientData: unknown
+  networkId: unknown
+  executionResult: unknown
+  blockNumber: unknown
+  confirmations: unknown
+  relatedAddresses: unknown
+}
+
+export type VerifiedRpcTransaction = {
+  hash: string
+  senderAddress: string
+  senderType: number
+  recipientAddress: string
+  recipientType: number
+  valueMinor: string
+  recipientDataHex: string
+  recipientData: string
+  blockNumber: number | null
+  confirmations: number
+  executionResult: boolean
+  networkId: number
+}
+
+type RpcBlock = { number: number; batch: number; type: 'micro' | 'macro'; network: string }
 
 export type VerificationOutcome =
   | { kind: 'confirmed'; reason?: string; code?: string }
@@ -36,6 +65,129 @@ function integerValue(value: unknown): bigint | null {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value)
   if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value)
   return null
+}
+
+function isRecord(value: unknown): value is RpcRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export class RpcResponseInvalidError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RpcResponseInvalidError'
+  }
+}
+
+class RpcServerError extends Error {}
+
+type RpcTemporaryCode = 'rpc_unavailable' | 'rpc_rate_limited'
+
+class RpcTemporaryError extends Error {
+  readonly code: RpcTemporaryCode
+
+  constructor(message: string, code: RpcTemporaryCode) {
+    super(message)
+    this.name = 'RpcTemporaryError'
+    this.code = code
+  }
+}
+
+class RpcNotFoundError extends Error {}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string') throw new RpcResponseInvalidError(`Nimiq RPC field ${field} is missing or invalid.`)
+  return value
+}
+
+function requiredInteger(value: unknown, field: string): number {
+  const integer = integerValue(value)
+  if (integer === null || integer > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RpcResponseInvalidError(`Nimiq RPC field ${field} is missing or invalid.`)
+  }
+  return Number(integer)
+}
+
+function requiredBigInt(value: unknown, field: string): bigint {
+  const integer = integerValue(value)
+  if (integer === null) throw new RpcResponseInvalidError(`Nimiq RPC field ${field} is missing or invalid.`)
+  return integer
+}
+
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') throw new RpcResponseInvalidError(`Nimiq RPC field ${field} is missing or invalid.`)
+  return value
+}
+
+export function parseRpcSuccess<T>(body: unknown): T {
+  if (!isRecord(body) || body.jsonrpc !== '2.0' || (typeof body.id !== 'number' && typeof body.id !== 'string')) {
+    throw new RpcResponseInvalidError('Nimiq RPC returned an invalid JSON-RPC envelope.')
+  }
+  if (body.error !== undefined) {
+    const error = isRecord(body.error) ? body.error.message : undefined
+    throw new RpcServerError(typeof error === 'string' ? error : 'Nimiq RPC returned an error.')
+  }
+  if (!isRecord(body.result) || !('data' in body.result) || !('metadata' in body.result)) {
+    throw new RpcResponseInvalidError('Nimiq RPC success responses must contain result.data and result.metadata.')
+  }
+  return body.result.data as T
+}
+
+export function decodeRecipientDataHex(value: unknown): string {
+  const hex = requiredString(value, 'recipientData')
+  if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new RpcResponseInvalidError('Nimiq transaction recipientData is not valid hex.')
+  }
+  const bytes = new Uint8Array(hex.length / 2)
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16)
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new RpcResponseInvalidError('Nimiq transaction recipientData is not valid UTF-8.')
+  }
+}
+
+export function normalizeRpcTransaction(input: unknown, options: { allowPending?: boolean } = {}): VerifiedRpcTransaction {
+  if (!isRecord(input)) throw new RpcResponseInvalidError('Nimiq RPC returned an invalid transaction object.')
+  const allowPending = options.allowPending === true
+  const rawBlockNumber = input.blockNumber
+  const blockNumber = rawBlockNumber === null || rawBlockNumber === undefined
+    ? null
+    : requiredInteger(rawBlockNumber, 'blockNumber')
+  if (blockNumber === null && !allowPending) throw new RpcResponseInvalidError('Nimiq RPC transaction is missing blockNumber.')
+  const rawHash = input.hash
+  const hash = rawHash === undefined || rawHash === null ? '' : requiredString(rawHash, 'hash')
+  const rawConfirmations = input.confirmations
+  const confirmations = rawConfirmations === undefined || rawConfirmations === null
+    ? 0
+    : requiredInteger(rawConfirmations, 'confirmations')
+  return {
+    hash,
+    senderAddress: requiredString(input.from, 'from'),
+    senderType: requiredInteger(input.fromType, 'fromType'),
+    recipientAddress: requiredString(input.to, 'to'),
+    recipientType: requiredInteger(input.toType, 'toType'),
+    valueMinor: requiredBigInt(input.value, 'value').toString(),
+    recipientDataHex: requiredString(input.recipientData, 'recipientData'),
+    recipientData: decodeRecipientDataHex(input.recipientData),
+    blockNumber,
+    confirmations,
+    executionResult: requiredBoolean(input.executionResult, 'executionResult'),
+    networkId: requiredInteger(input.networkId, 'networkId'),
+  }
+}
+
+function normalizeRpcBlock(input: unknown): RpcBlock {
+  if (!isRecord(input)) throw new RpcResponseInvalidError('Nimiq RPC returned an invalid block object.')
+  const type = input.type
+  if (type !== 'micro' && type !== 'macro') throw new RpcResponseInvalidError('Nimiq RPC block type is missing or invalid.')
+  return {
+    number: requiredInteger(input.number, 'number'),
+    batch: requiredInteger(input.batch, 'batch'),
+    type,
+    network: requiredString(input.network, 'network'),
+  }
 }
 
 export function expectedRpcNetwork(network: 'testnet' | 'mainnet'): 'TestAlbatross' | 'MainAlbatross' {
@@ -65,7 +217,7 @@ export function evaluateRpcNetwork(input: { actualNetwork: unknown; expectedNetw
 }
 
 export function evaluateTransactionLookup(input: { transactionFound: boolean; inMempool: boolean }): VerificationOutcome | null {
-  if (!input.transactionFound) return { kind: 'confirming', code: 'transaction_not_found', reason: 'Transaction submitted; waiting for it to appear onchain.' }
+  if (!input.transactionFound) return { kind: 'confirming', code: 'rpc_transaction_not_found', reason: 'Transaction submitted; waiting for it to appear onchain.' }
   if (input.inMempool) return { kind: 'confirming', code: 'transaction_in_mempool', reason: 'Transaction is in the Nimiq mempool; waiting for inclusion.' }
   return null
 }
@@ -79,7 +231,7 @@ function hasReachedMacroFinality(transactionBlock: RpcBlock, latestBlock: RpcBlo
 }
 
 export function evaluateNimiqTransaction(input: {
-  transaction: RpcTransaction
+  transaction: VerifiedRpcTransaction
   transactionBlock: RpcBlock | null
   latestBlock: RpcBlock | null
   rpcNetworkId: unknown
@@ -93,23 +245,23 @@ export function evaluateNimiqTransaction(input: {
   if (!input.latestBlock || !networkMatches(input.latestBlock.network, input.expectedNetwork)) {
     return evaluateRpcNetwork({ actualNetwork: input.latestBlock?.network, expectedNetwork: input.expectedNetwork })
   }
-  if (String(transaction.networkId) !== String(input.rpcNetworkId)) {
-    return { kind: 'invalid', code: 'network_mismatch', reason: 'The transaction belongs to a different Nimiq network.' }
+  if (transaction.networkId !== input.rpcNetworkId) {
+    return { kind: 'invalid', code: 'transaction_invalid_network', reason: 'The transaction belongs to a different Nimiq network.' }
   }
-  if (normalizeAddress(transaction.to) !== normalizeAddress(input.expectedRecipient)) {
-    return { kind: 'invalid', code: 'recipient_mismatch', reason: 'The recipient does not match this Tab.' }
+  if (normalizeAddress(transaction.recipientAddress) !== normalizeAddress(input.expectedRecipient)) {
+    return { kind: 'invalid', code: 'transaction_invalid_recipient', reason: 'The recipient does not match this Tab.' }
   }
-  if (normalizeAddress(transaction.from) !== normalizeAddress(input.expectedSender)) {
-    return { kind: 'invalid', code: 'sender_mismatch', reason: 'The sender does not match the claimed wallet.' }
+  if (transaction.senderType === 0 && normalizeAddress(transaction.senderAddress) !== normalizeAddress(input.expectedSender)) {
+    return { kind: 'invalid', code: 'transaction_invalid_sender', reason: 'The basic transaction sender does not match the claimed wallet.' }
   }
-  if (integerValue(transaction.value) !== BigInt(input.expectedAmountMinor)) {
-    return { kind: 'invalid', code: 'amount_mismatch', reason: 'The transaction amount does not match this participant share.' }
+  if (transaction.valueMinor !== BigInt(input.expectedAmountMinor).toString()) {
+    return { kind: 'invalid', code: 'transaction_invalid_amount', reason: 'The transaction amount does not match this participant share.' }
   }
   if (transaction.recipientData !== input.expectedReference) {
-    return { kind: 'invalid', code: 'reference_mismatch', reason: 'The payment reference does not match this Tab slot.' }
+    return { kind: 'invalid', code: 'transaction_invalid_reference', reason: 'The payment reference does not match this Tab slot.' }
   }
   if (transaction.executionResult !== true) {
-    return { kind: 'invalid', code: 'execution_failed', reason: 'The transaction was not successfully executed onchain.' }
+    return { kind: 'invalid', code: 'transaction_execution_failed', reason: 'The transaction was not successfully executed onchain.' }
   }
   if (!input.transactionBlock || !hasReachedMacroFinality(input.transactionBlock, input.latestBlock)) {
     // Nimiq finality is reached after the next macro block closes the transaction's batch.
@@ -117,9 +269,6 @@ export function evaluateNimiqTransaction(input: {
   }
   return { kind: 'confirmed' }
 }
-
-class RpcNotFoundError extends Error {}
-class RpcTemporaryError extends Error {}
 
 export function isRetryableRpcStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500
@@ -156,32 +305,38 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T> {
       body: JSON.stringify({ jsonrpc: '2.0', method, params, id: Date.now() }),
     })
   } catch {
-    throw new RpcTemporaryError('The Nimiq RPC endpoint could not be reached.')
+    throw new RpcTemporaryError('The Nimiq RPC endpoint could not be reached.', 'rpc_unavailable')
   }
   if (!response.ok) {
-    if (isRetryableRpcStatus(response.status)) throw new RpcTemporaryError(`Nimiq RPC returned HTTP ${response.status}.`)
-    throw new RpcTemporaryError(`Nimiq RPC returned an unavailable HTTP endpoint (${response.status}).`)
+    if (response.status === 429) throw new RpcTemporaryError('Nimiq RPC rate limit reached.', 'rpc_rate_limited')
+    throw new RpcTemporaryError(`Nimiq RPC returned HTTP ${response.status}.`, 'rpc_unavailable')
   }
-  let body: { result?: { data?: T } | T; error?: { message?: string } }
-  try { body = await response.json() as typeof body } catch { throw new RpcTemporaryError('Nimiq RPC returned invalid JSON.') }
-  if (body.error) {
-    const message = body.error.message ?? 'Nimiq RPC returned an error.'
-    if (/not found|unknown transaction|no such transaction/i.test(message)) throw new RpcNotFoundError(message)
-    throw new RpcTemporaryError(message)
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new RpcResponseInvalidError('Nimiq RPC returned invalid JSON.')
   }
-  if (!('result' in body) || body.result === undefined) throw new RpcTemporaryError('Nimiq RPC returned no result.')
-  const result = body.result
-  if (typeof result === 'object' && result !== null && 'data' in result) return result.data as T
-  return result as T
+  try {
+    return parseRpcSuccess<T>(body)
+  } catch (error) {
+    if (error instanceof RpcServerError) {
+      if (/not found|unknown transaction|no such transaction/i.test(error.message)) throw new RpcNotFoundError(error.message)
+      throw new RpcTemporaryError(error.message, 'rpc_unavailable')
+    }
+    throw error
+  }
 }
 
-async function findTransaction(hash: string): Promise<{ transaction: RpcTransaction | null; inMempool: boolean }> {
+async function findTransaction(hash: string): Promise<{ transaction: VerifiedRpcTransaction | null; inMempool: boolean }> {
   try {
-    return { transaction: await rpcCall<RpcTransaction>('getTransactionByHash', [hash]), inMempool: false }
+    const raw = await rpcCall<RawRpcTransaction | null>('getTransactionByHash', [hash])
+    return { transaction: raw ? normalizeRpcTransaction(raw) : null, inMempool: false }
   } catch (error) {
     if (!(error instanceof RpcNotFoundError)) throw error
     try {
-      return { transaction: await rpcCall<RpcTransaction>('getTransactionFromMempool', [hash]), inMempool: true }
+      const raw = await rpcCall<RawRpcTransaction | null>('getTransactionFromMempool', [hash])
+      return { transaction: raw ? normalizeRpcTransaction(raw, { allowPending: true }) : null, inMempool: true }
     } catch (mempoolError) {
       if (mempoolError instanceof RpcNotFoundError) return { transaction: null, inMempool: false }
       throw mempoolError
@@ -201,7 +356,7 @@ export const verifyNimiqTransaction = internalAction({
     let outcome: VerificationOutcome
     try {
       const expectedNetwork = configuredNetwork()
-      const latestBlock = await rpcCall<RpcBlock>('getLatestBlock', [false])
+      const latestBlock = normalizeRpcBlock(await rpcCall<unknown>('getLatestBlock', [false]))
       const networkOutcome = evaluateRpcNetwork({ actualNetwork: latestBlock.network, expectedNetwork })
       if (networkOutcome.kind === 'failed') {
         console.warn('Nimiq RPC network mismatch or unidentified network', {
@@ -216,32 +371,36 @@ export const verifyNimiqTransaction = internalAction({
           outcome = lookupOutcome
         } else {
           const transaction = found.transaction
-          if (!transaction) throw new RpcTemporaryError('Nimiq RPC returned no transaction.')
+          if (!transaction) throw new RpcTemporaryError('Nimiq RPC returned no transaction.', 'rpc_unavailable')
           const [transactionBlock, rpcNetworkId] = await Promise.all([
-            integerValue(transaction.blockNumber) === null ? Promise.resolve(null) : rpcCall<RpcBlock>('getBlockByNumber', [transaction.blockNumber, false]),
-            rpcCall<unknown>('getNetworkId', []),
+            transaction.blockNumber === null ? Promise.resolve(null) : rpcCall<unknown>('getBlockByNumber', [transaction.blockNumber, false]).then(normalizeRpcBlock),
+            rpcCall<unknown>('getNetworkId', []).then((value) => requiredInteger(value, 'networkId')),
           ])
-        outcome = evaluateNimiqTransaction({
-          transaction,
-          transactionBlock,
-          latestBlock,
-          rpcNetworkId,
-          expectedNetwork: configuredNetwork(),
-          expectedSender: context.payment.senderAddress,
-          expectedRecipient: context.tab.recipientAddress,
-          expectedAmountMinor: context.slot.amountMinor,
-          expectedReference: getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId),
-        })
+          outcome = evaluateNimiqTransaction({
+            transaction,
+            transactionBlock,
+            latestBlock,
+            rpcNetworkId,
+            expectedNetwork,
+            expectedSender: context.payment.senderAddress,
+            expectedRecipient: context.tab.recipientAddress,
+            expectedAmountMinor: context.slot.amountMinor,
+            expectedReference: getPaymentReference(context.tab.slug, context.slot._id, context.slot.shortId),
+          })
         }
       }
     } catch (error) {
-      if (!(error instanceof RpcTemporaryError) && !(error instanceof RpcNotFoundError)) {
+      if (error instanceof RpcResponseInvalidError) {
+        outcome = { kind: 'failed', code: 'rpc_response_invalid', reason: error.message }
+      } else if (error instanceof RpcTemporaryError) {
+        outcome = { kind: 'confirming', code: error.code, reason: 'Nimiq verification is temporarily unavailable; retrying.' }
+      } else if (error instanceof RpcNotFoundError) {
+        outcome = { kind: 'confirming', code: 'rpc_transaction_not_found', reason: 'Transaction submitted; waiting for it to appear onchain.' }
+      } else {
         const reason = error instanceof Error ? error.message : 'Verification configuration is invalid.'
         outcome = /NIMIQ_RPC_URL|NIMIQ_NETWORK|endpoint is not configured/i.test(reason)
           ? { kind: 'failed', code: 'verification_not_configured', reason: 'Onchain verification is not configured for this deployment.' }
           : { kind: 'invalid', code: 'verification_error', reason }
-      } else {
-        outcome = { kind: 'confirming', code: 'rpc_temporary', reason: 'Nimiq verification is temporarily unavailable; retrying.' }
       }
     }
 
