@@ -81,7 +81,7 @@ const emptyTab: PublicTab = { slug: '', title: '', token: 'NIM', amountMinor: '1
 function ParticipantRow({ participant, selected, disabled, onSelect }: { participant: PublicParticipant; selected: boolean; disabled: boolean; onSelect: () => void }) {
   const statusLabel = participant.status === 'paid' ? 'Paid' : participant.status === 'pending' ? 'Verifying onchain' : selected ? 'Selected' : 'Choose this slot'
   const content = <><div className={`status-dot status-${participant.status}`} aria-hidden="true">{participant.status === 'paid' ? '✓' : participant.status === 'pending' ? '…' : ''}</div><div className="slot-name"><strong>{participant.label}</strong><span>{statusLabel}</span></div><strong className="slot-amount">{formatLuna(participant.amountMinor)} NIM</strong></>
-  return participant.status === 'unpaid' ? <button className={`slot-row slot-button ${selected ? 'is-selected' : ''}`} type="button" onClick={onSelect} aria-pressed={selected} disabled={disabled}>{content}</button> : <div className="slot-row">{content}</div>
+  return participant.status !== 'paid' ? <button className={`slot-row slot-button ${selected ? 'is-selected' : ''}`} type="button" onClick={onSelect} aria-pressed={selected} disabled={disabled}>{content}</button> : <div className="slot-row">{content}</div>
 }
 
 function LoadingState() { return <div className="page state-page"><div className="loading-pulse" aria-hidden="true" /><p className="muted-label">Loading Tab…</p></div> }
