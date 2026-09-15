@@ -2,6 +2,7 @@ import { ValidationUtils } from '@nimiq/utils/validation-utils'
 import { mutation, query, type QueryCtx } from './_generated/server'
 import type { Doc } from './_generated/dataModel'
 import { v } from 'convex/values'
+import { sha256Hex } from '../src/lib/hash'
 
 const createParticipantValidator = v.object({
   label: v.string(),
@@ -170,11 +171,6 @@ export const getTabBySlug = query({
   handler: (ctx, args) => getPublicTab(ctx, args.slug),
 })
 
-async function hashOwnerSecret(secret: string): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret))
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
 export const getOrganizerTab = query({
   args: { slug: v.string(), ownerSecret: v.optional(v.string()) },
   returns: publicTabValidator,
@@ -182,7 +178,7 @@ export const getOrganizerTab = query({
     const tab = await ctx.db.query('tabs').withIndex('by_slug', (q) => q.eq('slug', args.slug)).first()
     if (!tab) return null
     if (!args.ownerSecret) return null
-    if (await hashOwnerSecret(args.ownerSecret) !== tab.ownerSecretHash) return null
+    if (sha256Hex(args.ownerSecret) !== tab.ownerSecretHash) return null
     const slots = await ctx.db.query('participantSlots').withIndex('by_tab', (q) => q.eq('tabId', tab._id)).take(100)
     return toPublicTab(tab, slots)
   },

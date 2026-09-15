@@ -15,6 +15,7 @@
   "dependencies": {
     "@nimiq/mini-app-sdk": "^0.1.0",
     "@nimiq/utils": "^0.12.4",
+    "@noble/hashes": "^2.4.0",
     "convex": "^1.27.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

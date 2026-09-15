@@ -1,3 +1,5 @@
+import { sha256Hex } from './hash'
+
 function randomBytes(length: number): Uint8Array {
   if (!globalThis.crypto?.getRandomValues) {
     throw new Error('Secure randomness is unavailable. Cannot create a safe Tab secret.')
@@ -59,10 +61,5 @@ export function deriveCompactReferenceId(value: string): string {
 
 export async function hashOwnerSecret(secret: string): Promise<string> {
   if (!secret) throw new Error('Owner secret cannot be empty.')
-  if (!globalThis.crypto?.subtle) {
-    throw new Error('Secure hashing is unavailable. Cannot create a safe Tab secret.')
-  }
-  const bytes = new TextEncoder().encode(secret)
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return sha256Hex(secret)
 }
