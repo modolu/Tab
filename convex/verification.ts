@@ -1,1 +1,1 @@
-// Phase 2 implementation placeholder.
+// Phase 2 placeholder: transaction verification intentionally remains unimplemented.

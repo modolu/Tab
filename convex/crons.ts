@@ -1,1 +1,1 @@
-// Phase 3 implementation placeholder.
+// Phase 3 placeholder: scheduled verification intentionally remains unimplemented.
