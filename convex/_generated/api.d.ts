@@ -9,7 +9,10 @@
  */
 
 import type * as participants from "../participants.js";
+import type * as payments from "../payments.js";
+import type * as reference from "../reference.js";
 import type * as tabs from "../tabs.js";
+import type * as verification from "../verification.js";
 
 import type {
   ApiFromModules,
@@ -19,7 +22,10 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   participants: typeof participants;
+  payments: typeof payments;
+  reference: typeof reference;
   tabs: typeof tabs;
+  verification: typeof verification;
 }>;
 
 /**

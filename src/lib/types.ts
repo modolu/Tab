@@ -50,3 +50,28 @@ export type CreateTabResult = {
   slug: string
   participantSlotIds: string[]
 }
+
+export type SlotClaimResult = {
+  tabId: string
+  slotId: string
+  claimedByAddress: string
+  paymentReference: string
+  status: 'unpaid' | 'pending' | 'paid'
+}
+
+export type SubmittedPaymentResult = {
+  paymentId: string
+  txHash: string
+  status: 'submitted' | 'confirming' | 'confirmed' | 'failed' | 'invalid'
+  slotStatus: 'unpaid' | 'pending' | 'paid'
+}
+
+export type PaymentStatus = {
+  paymentId: string
+  txHash: string
+  status: 'submitted' | 'confirming' | 'confirmed' | 'failed' | 'invalid'
+  verificationReason?: string
+  slotStatus: 'unpaid' | 'pending' | 'paid'
+  createdAt: number
+  confirmedAt?: number
+}

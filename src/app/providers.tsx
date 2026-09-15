@@ -1,13 +1,16 @@
-import { ConvexProvider, ConvexReactClient } from 'convex/react'
+import { ConvexProvider, ConvexReactClient, useQuery } from 'convex/react'
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { anyApi } from 'convex/server'
-import type { CreateTabInput, CreateTabResult, PublicTab } from '../lib/types'
+import type { CreateTabInput, CreateTabResult, PaymentStatus, PublicTab, SlotClaimResult, SubmittedPaymentResult } from '../lib/types'
 
 export type TabBackend = {
   configured: boolean
   createTab: (input: CreateTabInput) => Promise<CreateTabResult>
   getTabBySlug: (slug: string) => Promise<PublicTab | null>
   getOrganizerTab: (slug: string, ownerSecret?: string) => Promise<PublicTab | null>
+  claimParticipantSlot: (slug: string, slotId: string, walletAddress: string) => Promise<SlotClaimResult>
+  recordSubmittedPayment: (input: { slug: string; slotId: string; senderAddress: string; txHash: string }) => Promise<SubmittedPaymentResult>
+  getPaymentStatus: (slug: string, slotId: string) => Promise<PaymentStatus | null>
 }
 
 const BackendContext = createContext<TabBackend | null>(null)
@@ -38,7 +41,22 @@ export function createConvexBackend(client: ConvexReactClient): TabBackend {
       anyApi.tabs.getOrganizerTab,
       ownerSecret ? { slug, ownerSecret } : { slug },
     ),
+    claimParticipantSlot: (slug, slotId, walletAddress) => client.mutation(anyApi.participants.claimParticipantSlot, { slug, slotId, walletAddress }),
+    recordSubmittedPayment: (input) => client.mutation(anyApi.payments.recordSubmittedPayment, input),
+    getPaymentStatus: (slug, slotId) => client.query(anyApi.payments.getPaymentStatus, { slug, slotId }),
   }
+}
+
+export function usePublicTab(slug: string): PublicTab | null | undefined {
+  return useQuery(anyApi.tabs.getTabBySlug, slug ? { slug } : 'skip') as PublicTab | null | undefined
+}
+
+export function useOrganizerTab(slug: string, ownerSecret?: string): PublicTab | null | undefined {
+  return useQuery(anyApi.tabs.getOrganizerTab, ownerSecret ? { slug, ownerSecret } : 'skip') as PublicTab | null | undefined
+}
+
+export function usePaymentStatus(slug: string, slotId: string): PaymentStatus | null | undefined {
+  return useQuery(anyApi.payments.getPaymentStatus, slug && slotId ? { slug, slotId } : 'skip') as PaymentStatus | null | undefined
 }
 
 export function AppProviders({ children }: { children: ReactNode }) {

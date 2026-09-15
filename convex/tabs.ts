@@ -154,6 +154,7 @@ export const createTab = mutation({
         tabId,
         label: args.participants[index].label.trim(),
         amountMinor: amounts[index],
+        shortId: `s${index.toString(36)}`,
         status: 'unpaid',
         createdAt: now,
         updatedAt: now,

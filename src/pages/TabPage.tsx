@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useTabBackend } from '../app/providers'
+import { usePublicTab } from '../app/providers'
+import PaymentReview from '../components/payments/PaymentReview'
+import WalletConnectButton from '../components/wallet/WalletConnectButton'
+import { useParticipantSettlement } from '../features/join-tab/useParticipantSettlement'
 import { formatLuna } from '../lib/money'
-import type { PublicTab } from '../lib/types'
+import type { PublicParticipant, PublicTab } from '../lib/types'
 
 function abbreviateAddress(address: string): string {
   const compact = address.replace(/\s/g, '')
@@ -11,29 +14,18 @@ function abbreviateAddress(address: string): string {
 
 export default function TabPage() {
   const { slug = '' } = useParams()
-  const backend = useTabBackend()
-  const [tab, setTab] = useState<PublicTab | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const tab = usePublicTab(slug)
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null)
+  const selectedParticipant = tab?.participants.find(({ id }) => id === selectedSlotId)
+  const settlement = useParticipantSettlement(tab ?? emptyTab, selectedParticipant)
+  const selectionLocked = settlement.state === 'connecting' || settlement.state === 'submitting'
 
-  useEffect(() => {
-    let active = true
-    setLoading(true)
-    backend.getTabBySlug(slug).then((result) => {
-      if (active) { setTab(result); setLoading(false) }
-    }).catch(() => {
-      if (active) { setError('This Tab could not be loaded. Check your connection and try again.'); setLoading(false) }
-    })
-    return () => { active = false }
-  }, [backend, slug])
-
-  if (loading) return <LoadingState />
-  if (error) return <StateCard title="Something went wrong" copy={error} />
+  if (tab === undefined) return <LoadingState />
   if (!tab) return <StateCard title="Tab not found" copy="This link may be incomplete or the Tab may no longer be available." />
 
   const paidCount = tab.participants.filter(({ status }) => status === 'paid').length
-  const allocated = tab.participants.reduce((sum, participant) => sum + BigInt(participant.amountMinor), 0n)
-  const progress = allocated === 0n ? 0 : Math.round((paidCount / tab.participants.length) * 100)
+  const paidAmount = tab.participants.reduce((sum, participant) => participant.status === 'paid' ? sum + BigInt(participant.amountMinor) : sum, 0n)
+  const progress = tab.amountMinor === '0' ? 0 : Number((paidAmount * 100n) / BigInt(tab.amountMinor))
 
   return (
     <div className="page page-tab">
@@ -41,22 +33,36 @@ export default function TabPage() {
       <section className="total-card" aria-labelledby="tab-total">
         <p className="muted-label">Total contribution</p>
         <h1 id="tab-total">{formatLuna(tab.amountMinor)} <span>NIM</span></h1>
-        <div className="progress-track" aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
-        <p className="progress-copy"><strong>{paidCount} of {tab.participants.length}</strong> contributions verified</p>
+        <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-label="Verified payment progress"><span style={{ width: `${progress}%` }} /></div>
+        <p className="progress-copy"><strong>{paidCount} of {tab.participants.length}</strong> contributions verified · {formatLuna(paidAmount)} NIM received</p>
       </section>
       {tab.note && <p className="note-card">{tab.note}</p>}
-      <section className="content-section" aria-labelledby="shares-heading"><div className="section-title-row"><h3 id="shares-heading">Contributors</h3><span className="count-pill">{tab.participants.length}</span></div><div className="slot-list">{tab.participants.map((participant) => <ParticipantRow key={participant.id} {...participant} />)}</div></section>
+      <section className="content-section" aria-labelledby="shares-heading"><div className="section-title-row"><h3 id="shares-heading">Contributors</h3><span className="count-pill">{tab.participants.length}</span></div><div className="slot-list">{tab.participants.map((participant) => <ParticipantRow key={participant.id} participant={participant} selected={participant.id === selectedSlotId} disabled={selectionLocked} onSelect={() => setSelectedSlotId(participant.id)} />)}</div></section>
       <section className="recipient-card"><div><p className="muted-label">Recipient</p><strong>{abbreviateAddress(tab.recipientAddress)}</strong></div><span className="recipient-badge" aria-hidden="true">NIM</span><p className="sr-only">Payments go directly to the designated Nimiq recipient.</p></section>
-      <p className="future-note" role="status">Payment actions will be available in the next phase. Your share is reserved for now.</p>
+
+      {selectedParticipant && selectedParticipant.status === 'unpaid' && settlement.state === 'idle' && (
+        <section className="payment-action"><p className="payment-action-label">Your assigned share</p><h3>{formatLuna(selectedParticipant.amountMinor)} NIM</h3><p>Selecting a slot does not reserve payment until you connect your wallet.</p><WalletConnectButton onConnect={settlement.connect} /></section>
+      )}
+      {selectedParticipant && selectedParticipant.status === 'unpaid' && settlement.state === 'connecting' && <StatusCard title="Connecting wallet" copy="Confirm account access in Nimiq Pay…" />}
+      {selectedParticipant && selectedParticipant.status === 'unpaid' && (settlement.state === 'connecting' || settlement.state === 'ready' || settlement.state === 'submitting') && settlement.walletAddress && (
+        <PaymentReview tab={tab} participant={selectedParticipant} senderAddress={settlement.walletAddress} isSubmitting={settlement.state === 'submitting'} onPay={settlement.pay} />
+      )}
+      {selectedParticipant && selectedParticipant.status === 'pending' && <StatusCard title="Payment submitted" copy="Verifying onchain… Please do not submit another payment for this slot." />}
+      {selectedParticipant && selectedParticipant.status === 'paid' && <StatusCard title="This share is paid ✓" copy="The payment was independently verified onchain." />}
+      {settlement.error && <p className="form-error" role="alert">{settlement.error}</p>}
+      {!selectedParticipant && <p className="future-note" role="status">Choose your assigned slot to connect a Nimiq wallet and pay your exact share.</p>}
     </div>
   )
 }
 
-function ParticipantRow({ label, amountMinor, status }: { label: string; amountMinor: string; status: string }) {
-  const statusLabel = status === 'paid' ? 'Paid' : status === 'pending' ? 'Pending' : 'Unpaid'
-  return <div className="slot-row"><div className={`status-dot status-${status}`} aria-hidden="true">{status === 'paid' ? '✓' : ''}</div><div className="slot-name"><strong>{label}</strong><span>{statusLabel}</span></div><strong className="slot-amount">{formatLuna(amountMinor)} NIM</strong></div>
+const emptyTab: PublicTab = { slug: '', title: '', token: 'NIM', amountMinor: '1', recipientAddress: '', allocationMode: 'equal', status: 'open', participants: [] }
+
+function ParticipantRow({ participant, selected, disabled, onSelect }: { participant: PublicParticipant; selected: boolean; disabled: boolean; onSelect: () => void }) {
+  const statusLabel = participant.status === 'paid' ? 'Paid' : participant.status === 'pending' ? 'Verifying onchain' : selected ? 'Selected' : 'Choose this slot'
+  const content = <><div className={`status-dot status-${participant.status}`} aria-hidden="true">{participant.status === 'paid' ? '✓' : participant.status === 'pending' ? '…' : ''}</div><div className="slot-name"><strong>{participant.label}</strong><span>{statusLabel}</span></div><strong className="slot-amount">{formatLuna(participant.amountMinor)} NIM</strong></>
+  return participant.status === 'unpaid' ? <button className={`slot-row slot-button ${selected ? 'is-selected' : ''}`} type="button" onClick={onSelect} aria-pressed={selected} disabled={disabled}>{content}</button> : <div className="slot-row">{content}</div>
 }
 
 function LoadingState() { return <div className="page state-page"><div className="loading-pulse" aria-hidden="true" /><p className="muted-label">Loading Tab…</p></div> }
-
 function StateCard({ title, copy }: { title: string; copy: string }) { return <div className="page state-page"><div className="state-icon" aria-hidden="true">—</div><h2>{title}</h2><p>{copy}</p><Link className="button button-primary" to="/">Back home</Link></div> }
+function StatusCard({ title, copy }: { title: string; copy: string }) { return <section className="status-card" role="status"><strong>{title}</strong><p>{copy}</p></section> }
