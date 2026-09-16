@@ -15,6 +15,7 @@ function abbreviateAddress(address: string): string {
 
 export default function TabPage() {
   const { slug = '' } = useParams()
+  const hasOrganizerSession = Boolean(sessionStorage.getItem(`tab-owner-secret:${slug}`))
   const tab = usePublicTab(slug)
   const backend = useTabBackend()
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null)
@@ -48,7 +49,7 @@ export default function TabPage() {
 
   return (
     <div className="page page-tab">
-      <header className="page-header"><Link className="back-link" to="/" aria-label="Back to home">←</Link><div><p className="eyebrow">TAB DETAILS</p><h2>{tab.title}</h2></div></header>
+      <header className="page-header"><Link className="back-link" to={hasOrganizerSession ? `/o/${encodeURIComponent(slug)}` : '/'} aria-label={hasOrganizerSession ? 'Back to organizer' : 'Back to home'}>←</Link><div><p className="eyebrow">TAB DETAILS</p><h2>{tab.title}</h2></div></header>
       {tab.status === 'settled' && <section className="settled-card" role="status"><span className="success-icon" aria-hidden="true">✓</span><div><h3>Tab settled</h3><p>{formatLuna(paidAmount)} NIM received · {paidCount} contributor{paidCount === 1 ? '' : 's'}. No one left to chase.</p></div></section>}
       <section className="total-card" aria-labelledby="tab-total">
         <p className="muted-label">Total contribution</p>

@@ -76,13 +76,33 @@ function paymentStatus(slotId: string, status: PaymentStatus['status']): Payment
 
 beforeEach(() => {
   vi.clearAllMocks()
+  sessionStorage.clear()
 })
 
 afterEach(() => {
   cleanup()
+  sessionStorage.clear()
 })
 
 describe('Tab participant recovery selection', () => {
+  it('routes an organizer-owned participant view back to the organizer without exposing the secret', () => {
+    sessionStorage.setItem('tab-owner-secret:studio-dinner', 'raw-owner-secret')
+    renderTab()
+
+    const backLink = screen.getByRole('link', { name: 'Back to organizer' })
+    expect(backLink).toHaveAttribute('href', '/o/studio-dinner')
+    expect(backLink).not.toHaveAttribute('href', expect.stringContaining('raw-owner-secret'))
+    expect(screen.queryByText('raw-owner-secret')).not.toBeInTheDocument()
+  })
+
+  it('routes a participant-only view back home and remains public', () => {
+    renderTab()
+
+    expect(screen.getByRole('link', { name: 'Back to home' })).toHaveAttribute('href', '/')
+    expect(screen.getByText('Studio Dinner')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Back to organizer' })).not.toBeInTheDocument()
+  })
+
   it('shows verified progress for an open tab and the settled completion state', () => {
     const progressTab: PublicTab = {
       ...tab,

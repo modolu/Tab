@@ -5,7 +5,27 @@ export function buildShareUrl(origin: string, slug: string): string {
 }
 
 export function buildNimiqPayDeepLink(tabUrl: string): string {
-  return `https://nimpay.app/miniapps/open/${encodeURIComponent(tabUrl)}`
+  const url = parseShareUrl(tabUrl)
+  const path = url.pathname === '/' ? '' : url.pathname
+  return `https://nimpay.app/miniapps/open/${url.host}${path}${url.search}${url.hash}`
+}
+
+export function buildNimiqPayCustomSchemeDeepLink(tabUrl: string): string {
+  const url = parseShareUrl(tabUrl)
+  return `nimiqpay://miniapp?url=${encodeURIComponent(url.toString())}`
+}
+
+function parseShareUrl(tabUrl: string): URL {
+  let url: URL
+  try {
+    url = new URL(tabUrl)
+  } catch {
+    throw new Error('A valid absolute http(s) Tab URL is required.')
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('A valid absolute http(s) Tab URL is required.')
+  if (url.username || url.password) throw new Error('Tab URLs cannot contain credentials.')
+  return url
 }
 
 export async function copyTextToClipboard(text: string): Promise<void> {

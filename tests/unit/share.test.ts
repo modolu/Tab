@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildNimiqPayDeepLink, buildShareUrl, shareOrCopyTab } from '../../src/lib/share'
+import { buildNimiqPayCustomSchemeDeepLink, buildNimiqPayDeepLink, buildShareUrl, shareOrCopyTab } from '../../src/lib/share'
 
 describe('sharing helpers', () => {
   it('builds a deterministic tab URL and normalizes the origin', () => {
@@ -7,9 +7,33 @@ describe('sharing helpers', () => {
     expect(buildShareUrl('http://localhost:5173', 'slug with spaces')).toBe('http://localhost:5173/t/slug%20with%20spaces')
   })
 
-  it('encodes the full web URL in the Nimiq Pay deeplink', () => {
-    const url = 'https://tab.example/t/abc-123'
-    expect(buildNimiqPayDeepLink(url)).toBe(`https://nimpay.app/miniapps/open/${encodeURIComponent(url)}`)
+  it('builds the documented HTTPS deeplink for a production root', () => {
+    expect(buildNimiqPayDeepLink('https://tab-two-lime.vercel.app')).toBe('https://nimpay.app/miniapps/open/tab-two-lime.vercel.app')
+  })
+
+  it('preserves the production participant route without encoding it as one path segment', () => {
+    const url = 'https://tab-two-lime.vercel.app/t/tab-2724f82f47f14f0b'
+    const deeplink = buildNimiqPayDeepLink(url)
+    expect(deeplink).toBe('https://nimpay.app/miniapps/open/tab-two-lime.vercel.app/t/tab-2724f82f47f14f0b')
+    expect(deeplink).not.toContain('/open/%3A%2F%2F')
+  })
+
+  it('preserves query parameters and hashes', () => {
+    expect(buildNimiqPayDeepLink('https://tab.example/t/dinner?invite=1&source=chat#share')).toBe('https://nimpay.app/miniapps/open/tab.example/t/dinner?invite=1&source=chat#share')
+  })
+
+  it('preserves a local development host and port', () => {
+    expect(buildNimiqPayDeepLink('http://172.20.10.2:5174/t/local-tab')).toBe('https://nimpay.app/miniapps/open/172.20.10.2:5174/t/local-tab')
+  })
+
+  it('provides a safely encoded custom-scheme deeplink', () => {
+    const url = 'https://tab.example/t/abc-123?source=share'
+    expect(buildNimiqPayCustomSchemeDeepLink(url)).toBe(`nimiqpay://miniapp?url=${encodeURIComponent(url)}`)
+  })
+
+  it('rejects non-http(s) deeplink inputs', () => {
+    expect(() => buildNimiqPayDeepLink('ftp://tab.example/t/abc-123')).toThrow(/http\(s\)/i)
+    expect(() => buildNimiqPayCustomSchemeDeepLink('nimiqpay://miniapp?url=tab.example')).toThrow(/http\(s\)/i)
   })
 
   it('uses the native share sheet when available', async () => {
