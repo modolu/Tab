@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useOrganizerTab } from '../app/providers'
 import { formatLuna } from '../lib/money'
-import { buildNimiqPayDeepLink, buildShareUrl, copyTextToClipboard, shareOrCopyTab } from '../lib/share'
+import { buildNimiqPayCustomSchemeDeepLink, buildShareUrl, copyTextToClipboard, shareOrCopyTab } from '../lib/share'
 
 function abbreviateAddress(address: string): string {
   const compact = address.replace(/\s/g, '')
@@ -38,7 +38,7 @@ export default function OrganizerPage() {
   const paidCount = tab.participants.filter(({ status }) => status === 'paid').length
   const paidAmount = tab.participants.reduce((sum, participant) => participant.status === 'paid' ? sum + BigInt(participant.amountMinor) : sum, 0n)
   const progress = tab.amountMinor === '0' ? 0 : Number((paidAmount * 100n) / BigInt(tab.amountMinor))
-  const deeplink = buildNimiqPayDeepLink(shareUrl)
+  const deeplink = buildNimiqPayCustomSchemeDeepLink(shareUrl)
   return (
     <div className="page page-tab organizer-page">
       <header className="page-header"><Link className="back-link" to="/" aria-label="Back to home">←</Link><div><p className="eyebrow">TAB CREATED</p><h2>{tab.title}</h2></div></header>
