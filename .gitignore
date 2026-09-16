@@ -5,3 +5,4 @@ dist/
 .convex/
 .DS_Store
 coverage/
+.vercel
