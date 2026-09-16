@@ -48,4 +48,18 @@ describe('Organizer sharing', () => {
     expect(screen.queryByText('raw-owner-secret')).not.toBeInTheDocument()
     expect(launcher.getAttribute('href')).not.toContain('raw-owner-secret')
   })
+
+  it('explains missing organizer access without waiting for a skipped query', () => {
+    vi.mocked(useOrganizerTab).mockReturnValue(undefined)
+    render(
+      <MemoryRouter initialEntries={['/o/tab-ef7a1d7fcb7f4d43']}>
+        <Routes><Route path="/o/:slug" element={<OrganizerPage />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Organizer access is only available in the browser session where this Tab was created.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back home' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Open participant view' })).toHaveAttribute('href', '/t/tab-ef7a1d7fcb7f4d43')
+    expect(screen.queryByText('Loading your share view…')).not.toBeInTheDocument()
+  })
 })

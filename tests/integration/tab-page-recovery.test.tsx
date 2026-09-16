@@ -77,11 +77,13 @@ function paymentStatus(slotId: string, status: PaymentStatus['status']): Payment
 beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
+  delete window.nimiqPay
 })
 
 afterEach(() => {
   cleanup()
   sessionStorage.clear()
+  delete window.nimiqPay
 })
 
 describe('Tab participant recovery selection', () => {
@@ -124,6 +126,7 @@ describe('Tab participant recovery selection', () => {
 
   it('keeps unpaid slots selectable and the unrelated Tester slot payment-ready', async () => {
     const user = userEvent.setup()
+    ;(window as Window & { nimiqPay?: unknown }).nimiqPay = {}
     renderTab({ 'slot-tester': null })
 
     await user.click(screen.getByRole('button', { name: /Tester.*10 NIM/i }))
@@ -131,6 +134,19 @@ describe('Tab participant recovery selection', () => {
     expect(screen.getByRole('button', { name: 'Connect Nimiq wallet' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Pay 10 NIM$/i })).not.toBeInTheDocument()
     expect(connect).not.toHaveBeenCalled()
+  })
+
+  it('offers the Nimiq Pay launcher outside the host without showing wallet connection', async () => {
+    const user = userEvent.setup()
+    renderTab({ 'slot-tester': null })
+
+    await user.click(screen.getByRole('button', { name: /Tester.*10 NIM/i }))
+
+    const launcher = screen.getByRole('link', { name: 'Open in Nimiq Pay' })
+    expect(launcher).toHaveAttribute('href', expect.stringMatching(/^nimiqpay:\/\/miniapp\?url=/))
+    expect(new URL(launcher.getAttribute('href') ?? '').searchParams.get('url')).toBe('http://localhost:3000/t/studio-dinner')
+    expect(screen.getByText('Wallet connection is available inside Nimiq Pay.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Connect Nimiq wallet' })).not.toBeInTheDocument()
   })
 
   it('makes a pending confirming slot inspectable without exposing payment controls', async () => {

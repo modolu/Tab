@@ -4,7 +4,7 @@ import type { NimiqProvider } from '@nimiq/mini-app-sdk'
 import { useTabBackend } from '../../app/providers'
 import { connectNimiqAccount } from '../../nimiq/account'
 import { NimiqAppError } from '../../nimiq/errors'
-import { sendNimPayment } from '../../nimiq/payment'
+import { areNimiqAddressesEqual, sendNimPayment } from '../../nimiq/payment'
 import type { PublicParticipant, PublicTab } from '../../lib/types'
 
 export type SettlementUiState = 'idle' | 'connecting' | 'ready' | 'submitting'
@@ -45,6 +45,10 @@ export function useParticipantSettlement(tab: PublicTab, participant: PublicPart
 
   async function pay() {
     if (!participant || !walletAddress || !providerRef.current || !referenceRef.current || state !== 'ready') return
+    if (areNimiqAddressesEqual(walletAddress, tab.recipientAddress)) {
+      setError('Sender and recipient cannot be the same Nimiq account. Choose a different wallet.')
+      return
+    }
     setError(null)
     setState('submitting')
     try {

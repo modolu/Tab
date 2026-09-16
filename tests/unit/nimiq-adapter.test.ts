@@ -1,9 +1,10 @@
 import type { NimiqProvider } from '@nimiq/mini-app-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { connectNimiqAccount } from '../../src/nimiq/account'
-import { NimiqAppError } from '../../src/nimiq/errors'
+import { NimiqAppError, mapNimiqError } from '../../src/nimiq/errors'
 import { sendNimPayment } from '../../src/nimiq/payment'
-import { getNimiqProvider, resetNimiqProviderForTests } from '../../src/nimiq/provider'
+import { getNimiqProvider, isNimiqPayAvailable, resetNimiqProviderForTests } from '../../src/nimiq/provider'
+import { areNimiqAddressesEqual } from '../../src/nimiq/payment'
 
 const address = 'NQ2111111111111111111111111111111111'
 
@@ -50,9 +51,27 @@ describe('Nimiq provider adapter', () => {
     await expect(connectNimiqAccount()).rejects.toMatchObject({ code: 'consensus-unavailable' })
   })
 
-  it('maps provider initialization timeout', async () => {
+  it('maps missing provider injection to the outside-Nimiq-Pay state', async () => {
     delete window.nimiq
-    await expect(getNimiqProvider(1)).rejects.toMatchObject({ code: 'init-timeout' })
+    await expect(getNimiqProvider(1)).rejects.toMatchObject({ code: 'provider-unavailable' })
+  })
+
+  it('keeps an actual provider timeout distinct', () => {
+    expect(mapNimiqError(new Error('Request timed out')).code).toBe('init-timeout')
+  })
+
+  it('maps common provider failures without exposing raw error details', () => {
+    expect(mapNimiqError(new Error('Network unavailable')).message).toBe('The Nimiq network is unavailable right now. Check your connection and retry.')
+    expect(mapNimiqError(new Error('InvalidTransaction')).message).toBe('Nimiq Pay could not create this transaction. Check the amount and try again.')
+    expect(mapNimiqError(new Error('PermissionDeniedError')).message).toBe('Wallet access was cancelled. You can try again when you are ready.')
+    expect(mapNimiqError(new Error('Provider unavailable')).message).toBe('Open this Tab inside Nimiq Pay to connect a Nimiq wallet.')
+  })
+
+  it('detects the official Nimiq Pay host without initializing the wallet', () => {
+    delete window.nimiqPay
+    expect(isNimiqPayAvailable()).toBe(false)
+    ;(window as Window & { nimiqPay?: unknown }).nimiqPay = {}
+    expect(isNimiqPayAvailable()).toBe(true)
   })
 })
 
@@ -68,5 +87,15 @@ describe('Nimiq payment adapter', () => {
     await expect(sendNimPayment(rejected, { recipient: address, amountMinor: '1000000', paymentReference: 'TAB:abc:s0' })).rejects.toMatchObject({ code: 'permission-denied' })
     await expect(sendNimPayment(fakeProvider(), { recipient: address, amountMinor: '9007199254740992', paymentReference: 'TAB:abc:s0' })).rejects.toMatchObject({ code: 'invalid-transaction' })
     expect(new NimiqAppError('unexpected', 'x')).toBeInstanceOf(Error)
+  })
+
+  it('maps insufficient balance to safe payment copy and compares normalized addresses', async () => {
+    const provider = fakeProvider({ sendBasicTransactionWithData: vi.fn().mockResolvedValue({ error: { type: 'InsufficientFunds', message: 'Insufficient balance' } }) })
+    await expect(sendNimPayment(provider, { recipient: address, amountMinor: '1000000', paymentReference: 'TAB:abc:s0' })).rejects.toMatchObject({
+      code: 'insufficient-balance',
+      message: 'Your Nimiq balance is too low for this payment.',
+    })
+    expect(areNimiqAddressesEqual('NQ21 1111 1111', 'nq2111111111')).toBe(true)
+    expect(areNimiqAddressesEqual('NQ21 1111 1111', 'NQ22 1111 1111')).toBe(false)
   })
 })

@@ -3,6 +3,14 @@ import { toSdkLuna } from '../lib/money'
 import { createPaymentReference } from '../lib/ids'
 import { NimiqAppError, mapNimiqError } from './errors'
 
+export function normalizeNimiqAddress(address: string): string {
+  return address.replace(/\s+/g, '').toUpperCase()
+}
+
+export function areNimiqAddressesEqual(left: string, right: string): boolean {
+  return normalizeNimiqAddress(left) === normalizeNimiqAddress(right)
+}
+
 export async function sendNimPayment(
   provider: NimiqProvider,
   request: { recipient: string; amountMinor: string; paymentReference: string },
@@ -23,7 +31,8 @@ export async function sendNimPayment(
       value,
       data: request.paymentReference,
     })
-    if (typeof txHash !== 'string' || !txHash.trim()) throw new Error('The provider returned no transaction hash.')
+    if (typeof txHash !== 'string') throw mapNimiqError(txHash, 'Nimiq Pay could not submit this payment.')
+    if (!txHash.trim()) throw new Error('The provider returned no transaction hash.')
     return txHash
   } catch (error) {
     throw mapNimiqError(error, 'Nimiq Pay could not submit this payment.')

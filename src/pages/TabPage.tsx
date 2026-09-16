@@ -6,7 +6,9 @@ import WalletConnectButton from '../components/wallet/WalletConnectButton'
 import { useParticipantSettlement } from '../features/join-tab/useParticipantSettlement'
 import { canShowPaymentAction } from '../features/settlement/paymentState'
 import { formatLuna } from '../lib/money'
+import { buildNimiqPayCustomSchemeDeepLink, buildShareUrl } from '../lib/share'
 import type { PaymentStatus, PublicParticipant, PublicTab } from '../lib/types'
+import { isNimiqPayAvailable } from '../nimiq/provider'
 
 function abbreviateAddress(address: string): string {
   const compact = address.replace(/\s/g, '')
@@ -33,6 +35,8 @@ export default function TabPage() {
   const paidAmount = tab.participants.reduce((sum, participant) => participant.status === 'paid' ? sum + BigInt(participant.amountMinor) : sum, 0n)
   const progress = tab.amountMinor === '0' ? 0 : Number((paidAmount * 100n) / BigInt(tab.amountMinor))
   const verificationNeedsRetry = selectedParticipant !== undefined && selectedParticipant.status !== 'paid' && paymentStatus?.status === 'failed'
+  const participantUrl = buildShareUrl(window.location.origin, slug)
+  const nimiqPayLauncher = buildNimiqPayCustomSchemeDeepLink(participantUrl)
 
   async function retryVerification() {
     if (!selectedParticipant || !verificationNeedsRetry || retryingVerification) return
@@ -62,7 +66,7 @@ export default function TabPage() {
       <section className="recipient-card"><div><p className="muted-label">Recipient</p><details className="address-details"><summary>{abbreviateAddress(tab.recipientAddress)}</summary><code>{tab.recipientAddress}</code></details></div><span className="recipient-badge" aria-hidden="true">NIM</span><p className="sr-only">Payments go directly to the designated Nimiq recipient.</p></section>
 
       {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && settlement.state === 'idle' && (
-        <section className="payment-action"><p className="payment-action-label">Your assigned share</p><h3>{formatLuna(selectedParticipant.amountMinor)} NIM</h3><p>Selecting a slot does not reserve payment until you connect your wallet.</p><WalletConnectButton onConnect={settlement.connect} /></section>
+        <section className="payment-action"><p className="payment-action-label">Your assigned share</p><h3>{formatLuna(selectedParticipant.amountMinor)} NIM</h3>{isNimiqPayAvailable() ? <><p>Selecting a slot does not reserve payment until you connect your wallet.</p><WalletConnectButton onConnect={settlement.connect} /></> : <><p>Wallet connection is available inside Nimiq Pay.</p><a className="button button-primary button-large" href={nimiqPayLauncher}>Open in Nimiq Pay</a></>}</section>
       )}
       {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && settlement.state === 'connecting' && <StatusCard title="Connecting wallet" copy="Confirm account access in Nimiq Pay…" />}
       {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && (settlement.state === 'connecting' || settlement.state === 'ready' || settlement.state === 'submitting') && settlement.walletAddress && (

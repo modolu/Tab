@@ -179,6 +179,7 @@ input::placeholder, textarea::placeholder { color: #a6b0aa; }
 .state-icon { display: grid; width: 48px; height: 48px; place-items: center; border-radius: 16px; color: var(--green-dark); background: var(--mint); font-size: 25px; }
 .loading-pulse { width: 42px; height: 42px; margin-bottom: 16px; border: 4px solid #d5e8dc; border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; }
 .state-page .muted-label { color: var(--muted); }
+.state-actions { display: grid; width: min(100%, 350px); gap: 9px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 360px) { .app-shell { padding-left: 12px; padding-right: 12px; } .form-section, .content-section, .payment-action, .payment-review, .status-card { padding: 15px; } .total-card { padding: 19px 16px 16px; } .total-card h1 { font-size: 38px; } .participant-row .share-input { min-width: 92px; } }

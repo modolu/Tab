@@ -16,6 +16,7 @@ export default function OrganizerPage() {
   const [shareFeedback, setShareFeedback] = useState<'idle' | 'copied' | 'shared' | 'cancelled' | 'error'>('idle')
   const shareUrl = buildShareUrl(window.location.origin, slug)
 
+  if (!ownerSecret) return <MissingOrganizerAccess slug={slug} />
   if (tab === undefined) return <div className="page state-page" role="status" aria-live="polite" aria-busy="true"><div className="loading-pulse" aria-hidden="true" /><p className="muted-label">Loading your share view…</p></div>
   if (!tab) return <StateCard title="Could not load Tab" copy="This organizer link is no longer available or its private key is missing." />
   const tabTitle = tab.title
@@ -52,3 +53,7 @@ export default function OrganizerPage() {
 }
 
 function StateCard({ title, copy }: { title: string; copy: string }) { return <div className="page state-page"><div className="state-icon" aria-hidden="true">—</div><h2>{title}</h2><p>{copy}</p><Link className="button button-primary" to="/">Back home</Link></div> }
+
+function MissingOrganizerAccess({ slug }: { slug: string }) {
+  return <div className="page state-page"><div className="state-icon" aria-hidden="true">—</div><h2>Organizer access unavailable</h2><p>Organizer access is only available in the browser session where this Tab was created.</p><div className="state-actions"><Link className="button button-primary" to="/">Back home</Link><Link className="button button-secondary" to={`/t/${encodeURIComponent(slug)}`}>Open participant view</Link></div></div>
+}

@@ -8,7 +8,7 @@ export async function connectNimiqAccount(timeout = 10_000): Promise<NimiqAccoun
   let accounts: string[]
   try {
     const result = await provider.listAccounts()
-    if (!Array.isArray(result)) throw new Error('The Nimiq provider returned an invalid account response.')
+    if (!Array.isArray(result)) throw mapNimiqError(result, 'Nimiq Pay could not provide an account.')
     accounts = result
   } catch (error) {
     throw mapNimiqError(error, 'Nimiq Pay could not provide an account.')

@@ -4,6 +4,11 @@ import { NimiqAppError, mapNimiqError } from './errors'
 const DEFAULT_INIT_TIMEOUT = 10_000
 let providerPromise: Promise<NimiqProvider> | null = null
 
+/** Nimiq Pay seeds this host context before loading a Mini App. */
+export function isNimiqPayAvailable(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.nimiqPay)
+}
+
 export async function getNimiqProvider(timeout = DEFAULT_INIT_TIMEOUT): Promise<NimiqProvider> {
   if (typeof window === 'undefined') {
     throw new NimiqAppError('provider-unavailable', 'Open this Tab inside Nimiq Pay to connect a Nimiq wallet.')
