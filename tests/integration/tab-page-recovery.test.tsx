@@ -120,6 +120,8 @@ describe('Tab participant recovery selection', () => {
 
     renderTab({}, { ...progressTab, status: 'settled', participants: progressTab.participants.map((participant) => ({ ...participant, status: 'paid' })) })
     expect(screen.getByText('Tab settled').closest('section')).toHaveTextContent('Tab settled')
+    expect(screen.getByText('Tab settled').closest('section')).toHaveTextContent('2 / 2 contributions verified')
+    expect(screen.getByText('Tab settled').closest('section')).toHaveTextContent('2 NIM received')
     expect(screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, ' ').includes('2 of 2 contributions verified · 2 NIM received') ?? false).some((element) => element.classList.contains('progress-copy'))).toBe(true)
     expect(screen.getByText(/No one left to chase/i)).toBeInTheDocument()
   })
@@ -156,6 +158,7 @@ describe('Tab participant recovery selection', () => {
     await user.click(screen.getByRole('button', { name: /Dolu.*10 NIM/i }))
 
     expect(screen.getByText(/Verifying onchain… Please do not submit another payment/i)).toBeInTheDocument()
+    expect(screen.getByText('Payment submitted').closest('.status-card')).toHaveClass('status-card-pending')
     expect(screen.getByText(/Do not submit another payment/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect Nimiq wallet' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Pay 10 NIM$/i })).not.toBeInTheDocument()
@@ -168,6 +171,7 @@ describe('Tab participant recovery selection', () => {
     await user.click(screen.getByRole('button', { name: /Dolu.*10 NIM/i }))
 
     expect(screen.getByText(/Verification needs to be retried/i)).toBeInTheDocument()
+    expect(screen.getByText('Payment submitted').closest('.status-card')).toHaveClass('status-card-retry')
     expect(screen.getByRole('button', { name: 'Retry verification' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect Nimiq wallet' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Pay 10 NIM$/i })).not.toBeInTheDocument()

@@ -31,9 +31,10 @@ export default function PaymentResultPage() {
   const isConfirmed = status?.status === 'confirmed' || participant?.status === 'paid'
   const isInvalid = status?.status === 'invalid'
   const isFailed = status?.status === 'failed'
+  const resultTone = isConfirmed ? 'is-success' : isInvalid ? 'is-error' : isFailed ? 'is-retry' : 'is-pending'
   return (
     <div className="page state-page payment-result-page">
-      <div className={`result-icon ${isConfirmed ? 'is-success' : isInvalid || isFailed ? 'is-error' : ''}`} aria-hidden="true">{isConfirmed ? '✓' : isInvalid || isFailed ? '!' : '…'}</div>
+      <div className={`result-icon ${resultTone}`} aria-hidden="true">{isConfirmed ? '✓' : isInvalid ? '!' : isFailed ? '↻' : '…'}</div>
       <p className="eyebrow">{tab.title}</p>
       <h2>{isConfirmed ? 'Payment verified' : isInvalid ? 'Payment could not be verified' : isFailed ? 'Verification needs a retry' : 'Payment submitted'}</h2>
       <p>{isConfirmed ? `${participant?.label ?? 'Your'} share is paid.` : isInvalid ? (status?.verificationReason ?? 'This transaction did not match the assigned payment.') : isFailed ? 'Payment submitted. Verification needs to be retried from the Tab. Do not send another payment.' : recording ? 'Saving your transaction securely…' : 'Verifying onchain… Do not submit another payment for this slot.'}</p>
