@@ -9,15 +9,6 @@ function abbreviateAddress(address: string): string {
   return compact.length < 14 ? address : `${compact.slice(0, 8)}…${compact.slice(-6)}`
 }
 
-function presentShareUrl(shareUrl: string): string {
-  try {
-    const url = new URL(shareUrl)
-    return `${url.host}${url.pathname}${url.search}${url.hash}`
-  } catch {
-    return shareUrl
-  }
-}
-
 export default function OrganizerPage() {
   const { slug = '' } = useParams()
   const ownerSecret = sessionStorage.getItem(`tab-owner-secret:${slug}`) ?? undefined
@@ -52,11 +43,11 @@ export default function OrganizerPage() {
   return (
     <div className="page page-tab organizer-page">
       <header className="page-header"><Link className="back-link" to="/" aria-label="Back to home">←</Link><div><p className="eyebrow">TAB CREATED</p><h2>{tab.title}</h2></div></header>
-      {tab.status === 'settled' ? <section className="settled-card" role="status"><span className="success-icon" aria-hidden="true">✓</span><div className="settled-content"><p className="settled-eyebrow">COMPLETE</p><h3>Tab settled</h3><p className="settled-summary"><strong>{paidCount} / {tab.participants.length}</strong> contributions verified · <strong>{formatLuna(paidAmount)} NIM</strong> received</p><p className="settled-note">No one left to chase.</p></div></section> : <section className="success-card"><span className="success-icon" aria-hidden="true">✓</span><div><h3>Your Tab is ready</h3><p>Share the link with everyone contributing.</p></div></section>}
+      <section className={tab.status === 'settled' ? 'settled-card' : 'success-card'} role={tab.status === 'settled' ? 'status' : undefined}><span className="success-icon" aria-hidden="true">✓</span><div><h3>{tab.status === 'settled' ? 'Tab settled' : 'Your Tab is ready'}</h3><p>{tab.status === 'settled' ? 'Every contribution has been verified.' : 'Share the link with everyone contributing.'}</p></div></section>
       <section className="total-card organizer-total"><p className="muted-label">Collection total</p><h1>{formatLuna(tab.amountMinor)} <span>NIM</span></h1><div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-label="Verified payment progress"><span style={{ width: `${progress}%` }} /></div><p className="progress-copy"><strong>{paidCount} of {tab.participants.length}</strong> contributions verified · {formatLuna(paidAmount)} NIM received</p></section>
       <section className="content-section" aria-labelledby="organizer-shares"><div className="section-title-row"><h3 id="organizer-shares">Allocation</h3><Link className="text-link" to={`/t/${encodeURIComponent(slug)}`}>Open participant view</Link></div><div className="slot-list">{tab.participants.map((participant) => <div className="slot-row" key={participant.id}><div className={`status-dot status-${participant.status}`} aria-hidden="true">{participant.status === 'paid' ? '✓' : participant.status === 'pending' ? '…' : ''}</div><div className="slot-name"><strong>{participant.label}</strong><span>{participant.status === 'paid' ? 'Paid' : participant.status === 'pending' ? 'Verifying onchain' : 'Unpaid'}</span></div><strong className="slot-amount">{formatLuna(participant.amountMinor)} NIM</strong></div>)}</div></section>
       <section className="recipient-card"><div><p className="muted-label">Recipient</p><details className="address-details"><summary>{abbreviateAddress(tab.recipientAddress)}</summary><code>{tab.recipientAddress}</code></details></div><span className="recipient-badge">NIM</span></section>
-      <section className="share-card"><p className="muted-label">Next step</p><h3>Share your Tab</h3><div className="share-url" title={shareUrl}><span className="share-url-label">Participant link</span><strong>{presentShareUrl(shareUrl)}</strong></div><div className="share-actions"><button className="button button-primary" type="button" onClick={shareTab}>Share Tab</button><button className="button button-secondary" type="button" onClick={copyShareLink}>Copy link</button></div>{shareFeedback !== 'idle' && <p className={`share-feedback ${shareFeedback === 'error' ? 'is-error' : ''}`} role="status">{shareFeedback === 'shared' ? 'Share sheet opened ✓' : shareFeedback === 'copied' ? 'Link copied ✓' : shareFeedback === 'cancelled' ? 'Share cancelled' : 'Could not share or copy the link.'}</p>}<a className="text-link deeplink" href={deeplink}>Open in Nimiq Pay</a></section>
+      <section className="share-card"><p className="muted-label">Invite contributors</p><h3>Share this Tab</h3><div className="share-url">{shareUrl}</div><div className="share-actions"><button className="button button-primary" type="button" onClick={shareTab}>Share Tab</button><button className="button button-secondary" type="button" onClick={copyShareLink}>Copy link</button></div>{shareFeedback !== 'idle' && <p className={`share-feedback ${shareFeedback === 'error' ? 'is-error' : ''}`} role="status">{shareFeedback === 'shared' ? 'Share sheet opened ✓' : shareFeedback === 'copied' ? 'Link copied ✓' : shareFeedback === 'cancelled' ? 'Share cancelled' : 'Could not share or copy the link.'}</p>}<a className="text-link deeplink" href={deeplink}>Open in Nimiq Pay</a></section>
     </div>
   )
 }

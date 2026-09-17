@@ -54,7 +54,7 @@ export default function TabPage() {
   return (
     <div className="page page-tab">
       <header className="page-header"><Link className="back-link" to={hasOrganizerSession ? `/o/${encodeURIComponent(slug)}` : '/'} aria-label={hasOrganizerSession ? 'Back to organizer' : 'Back to home'}>←</Link><div><p className="eyebrow">TAB DETAILS</p><h2>{tab.title}</h2></div></header>
-      {tab.status === 'settled' && <section className="settled-card" role="status"><span className="success-icon" aria-hidden="true">✓</span><div className="settled-content"><p className="settled-eyebrow">COMPLETE</p><h3>Tab settled</h3><p className="settled-summary"><strong>{paidCount} / {tab.participants.length}</strong> contributions verified · <strong>{formatLuna(paidAmount)} NIM</strong> received</p><p className="settled-note">No one left to chase.</p></div></section>}
+      {tab.status === 'settled' && <section className="settled-card" role="status"><span className="success-icon" aria-hidden="true">✓</span><div><h3>Tab settled</h3><p>{formatLuna(paidAmount)} NIM received · {paidCount} contributor{paidCount === 1 ? '' : 's'}. No one left to chase.</p></div></section>}
       <section className="total-card" aria-labelledby="tab-total">
         <p className="muted-label">Total contribution</p>
         <h1 id="tab-total">{formatLuna(tab.amountMinor)} <span>NIM</span></h1>
@@ -68,13 +68,13 @@ export default function TabPage() {
       {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && settlement.state === 'idle' && (
         <section className="payment-action"><p className="payment-action-label">Your assigned share</p><h3>{formatLuna(selectedParticipant.amountMinor)} NIM</h3>{isNimiqPayAvailable() ? <><p>Selecting a slot does not reserve payment until you connect your wallet.</p><WalletConnectButton onConnect={settlement.connect} /></> : <><p>Wallet connection is available inside Nimiq Pay.</p><a className="button button-primary button-large" href={nimiqPayLauncher}>Open in Nimiq Pay</a></>}</section>
       )}
-      {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && settlement.state === 'connecting' && <StatusCard variant="pending" title="Connecting wallet" copy="Confirm account access in Nimiq Pay…" />}
+      {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && settlement.state === 'connecting' && <StatusCard title="Connecting wallet" copy="Confirm account access in Nimiq Pay…" />}
       {selectedParticipant && canShowPaymentAction(selectedParticipant.status, paymentStatus) && (settlement.state === 'connecting' || settlement.state === 'ready' || settlement.state === 'submitting') && settlement.walletAddress && (
         <PaymentReview tab={tab} participant={selectedParticipant} senderAddress={settlement.walletAddress} isSubmitting={settlement.state === 'submitting'} onPay={settlement.pay} />
       )}
-      {selectedParticipant && verificationNeedsRetry && <StatusCard variant="retry" title="Payment submitted" copy="Verification needs to be retried. You do not need to send another payment." actionLabel={retryingVerification ? 'Retrying verification…' : 'Retry verification'} actionDisabled={retryingVerification} onAction={retryVerification} />}
-      {selectedParticipant && selectedParticipant.status === 'pending' && !verificationNeedsRetry && <StatusCard variant="pending" title="Payment submitted" copy="Verifying onchain… Please do not submit another payment for this slot. Your transaction was submitted." />}
-      {selectedParticipant && selectedParticipant.status === 'paid' && <StatusCard variant="paid" title="This share is paid ✓" copy="The payment was independently verified onchain." />}
+      {selectedParticipant && verificationNeedsRetry && <StatusCard title="Payment submitted" copy="Verification needs to be retried. You do not need to send another payment." actionLabel={retryingVerification ? 'Retrying verification…' : 'Retry verification'} actionDisabled={retryingVerification} onAction={retryVerification} />}
+      {selectedParticipant && selectedParticipant.status === 'pending' && !verificationNeedsRetry && <StatusCard title="Payment submitted" copy="Verifying onchain… Please do not submit another payment for this slot. Your transaction was submitted." />}
+      {selectedParticipant && selectedParticipant.status === 'paid' && <StatusCard title="This share is paid ✓" copy="The payment was independently verified onchain." />}
       {settlement.error && <p className="form-error" role="alert">{settlement.error}</p>}
       {retryError && <p className="form-error" role="alert">{retryError}</p>}
       {!selectedParticipant && (tab.status === 'settled' ? <p className="future-note" role="status">Every contribution has been verified. This Tab is complete.</p> : <p className="future-note" role="status">Choose your assigned slot to connect a Nimiq wallet and pay your exact share.</p>)}
@@ -85,11 +85,11 @@ export default function TabPage() {
 const emptyTab: PublicTab = { slug: '', title: '', token: 'NIM', amountMinor: '1', recipientAddress: '', allocationMode: 'equal', status: 'open', participants: [] }
 
 function ParticipantRow({ participant, selected, disabled, onSelect, paymentStatus }: { participant: PublicParticipant; selected: boolean; disabled: boolean; onSelect: () => void; paymentStatus?: PaymentStatus['status'] }) {
-  const statusLabel = participant.status === 'paid' ? 'Paid · verified onchain' : participant.status === 'pending' && selected && paymentStatus === 'failed' ? 'Needs retry' : participant.status === 'pending' ? 'Verifying onchain' : selected ? 'Selected' : 'Available'
+  const statusLabel = participant.status === 'paid' ? 'Paid · verified onchain' : participant.status === 'pending' && selected && paymentStatus === 'failed' ? 'Verification needs retry' : participant.status === 'pending' ? 'Verifying onchain' : selected ? 'Selected · ready to pay' : 'Choose this slot'
   const content = <><div className={`status-dot status-${participant.status}`} aria-hidden="true">{participant.status === 'paid' ? '✓' : participant.status === 'pending' ? '…' : ''}</div><div className="slot-name"><strong>{participant.label}</strong><span>{statusLabel}</span></div><strong className="slot-amount">{formatLuna(participant.amountMinor)} NIM</strong></>
   return participant.status !== 'paid' ? <button className={`slot-row slot-button ${selected ? 'is-selected' : ''}`} type="button" onClick={onSelect} aria-pressed={selected} disabled={disabled}>{content}</button> : <div className="slot-row">{content}</div>
 }
 
 function LoadingState() { return <div className="page state-page" role="status" aria-live="polite" aria-busy="true"><div className="loading-pulse" aria-hidden="true" /><p className="muted-label">Loading Tab…</p></div> }
 function StateCard({ title, copy }: { title: string; copy: string }) { return <div className="page state-page"><div className="state-icon" aria-hidden="true">—</div><h2>{title}</h2><p>{copy}</p><Link className="button button-primary" to="/">Back home</Link></div> }
-function StatusCard({ variant = 'pending', title, copy, actionLabel, actionDisabled, onAction }: { variant?: 'pending' | 'retry' | 'paid'; title: string; copy: string; actionLabel?: string; actionDisabled?: boolean; onAction?: () => void }) { return <section className={`status-card status-card-${variant}`} role="status"><strong>{title}</strong><p>{copy}</p>{actionLabel && onAction && <button className="button button-secondary" type="button" onClick={onAction} disabled={actionDisabled}>{actionLabel}</button>}</section> }
+function StatusCard({ title, copy, actionLabel, actionDisabled, onAction }: { title: string; copy: string; actionLabel?: string; actionDisabled?: boolean; onAction?: () => void }) { return <section className="status-card" role="status"><strong>{title}</strong><p>{copy}</p>{actionLabel && onAction && <button className="button button-secondary" type="button" onClick={onAction} disabled={actionDisabled}>{actionLabel}</button>}</section> }
